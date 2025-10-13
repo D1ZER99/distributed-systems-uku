@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  echo-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    ports:
+      - "8080:8080"
+    networks:
+      - echo-network
+    container_name: echo-server
+
+  echo-client:
+    build:
+      context: .
+      dockerfile: Dockerfile.client
+    depends_on:
+      - echo-server
+    networks:
+      - echo-network
+    container_name: echo-client
+    stdin_open: true
+    tty: true
+    command: ["python", "echo_client.py", "echo-server", "8080"]
+
+networks:
+  echo-network:
+    driver: bridge

@@ -1,0 +1,53 @@
+version: '3.8'
+
+services:
+  master:
+    build:
+      context: .
+      dockerfile: Dockerfile.master
+    ports:
+      - "5000:5000"
+    networks:
+      - replicated-log-network
+    container_name: master
+    environment:
+      - SECONDARIES=http://secondary-1:5001,http://secondary-2:5002
+    depends_on:
+      - secondary-1
+      - secondary-2
+
+  secondary-1:
+    build:
+      context: .
+      dockerfile: Dockerfile.secondary
+    ports:
+      - "5001:5001"
+    networks:
+      - replicated-log-network
+    container_name: secondary-1
+    environment:
+      - SERVER_ID=secondary-1
+      - SECONDARY_PORT=5001
+      - SECONDARY_HOST=secondary-1
+      - REPLICATION_DELAY=2.0
+      - MASTER_URL=http://master:5000
+
+  secondary-2:
+    build:
+      context: .
+      dockerfile: Dockerfile.secondary
+    ports:
+      - "5002:5002"
+    networks:
+      - replicated-log-network
+    container_name: secondary-2
+    environment:
+      - SERVER_ID=secondary-2
+      - SECONDARY_PORT=5002
+      - SECONDARY_HOST=secondary-2
+      - REPLICATION_DELAY=1.5
+      - MASTER_URL=http://master:5000
+
+networks:
+  replicated-log-network:
+    driver: bridge
