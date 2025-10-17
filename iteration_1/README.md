@@ -18,6 +18,7 @@ Client --> Master --> Secondary-1
 
 - **HTTP REST API** for all interactions
 - **Blocking replication** - POST completes only after all secondaries acknowledge
+- **Parallel replication** - Master contacts all secondaries simultaneously using threading
 - **Configurable delays** on secondaries to test blocking behavior
 - **Comprehensive logging** across all components
 - **Docker containerization** for easy deployment
@@ -41,10 +42,10 @@ Client --> Master --> Secondary-1
 
 ## Files
 
-- `master.py` - Master server implementation
+- `master.py` - Master server implementation (Flask + requests + threading)
 - `secondary.py` - Secondary server implementation  
 - `test_client.py` - Test client for demonstration
-- `requirements.txt` - Python dependencies
+- `requirements.txt` - Python dependencies (Flask, requests)
 - `Dockerfile.master` - Docker configuration for master
 - `Dockerfile.secondary` - Docker configuration for secondaries
 - `docker-compose.yml` - Complete system deployment
@@ -60,7 +61,7 @@ Client --> Master --> Secondary-1
 
 2. **Test the system:**
    ```bash
-   # Run the demo
+   # Run comprehensive demo
    python test_client.py demo
    
    # Post a single message
@@ -131,6 +132,48 @@ Client --> Master --> Secondary-1
 - `SECONDARY_HOST` - Hostname for registration (default: localhost)
 - `REPLICATION_DELAY` - Artificial delay in seconds (default: 2.0)
 - `MASTER_URL` - Master URL for registration
+
+## Implementation Details
+
+### � **Synchronous Architecture with Parallel Replication**
+
+The implementation uses **synchronous programming** with **threading for parallel replication**:
+
+```python
+# Threading-based parallel replication
+def replicate_to_secondaries(self, message_entry):
+    threads = []
+    for secondary_url in self.secondaries:
+        thread = threading.Thread(target=replicate_to_secondary, args=(secondary_url,))
+        thread.start()  # Start all threads simultaneously
+        threads.append(thread)
+    
+    # Wait for all threads to complete
+    for thread in threads:
+        thread.join()  # Block until all replication completes
+```
+
+### ⚡ **Performance Characteristics**
+
+| Approach | Time Complexity | Blocking Behavior | Complexity |
+|----------|-----------------|-------------------|------------|
+| **Sequential Replication** | O(sum of delays) | Blocks per secondary | Simple |
+| **Parallel Replication (Current)** | O(max delay) | Blocks until all complete | Moderate |
+| **Async Implementation** | O(max delay) | Non-blocking event loop | Complex |
+
+### 🎯 **Why Synchronous Programming?**
+
+**Benefits for learning:**
+- ✅ **Easier to understand** - Linear execution flow
+- ✅ **Simpler debugging** - Stack traces are clear
+- ✅ **Fewer edge cases** - No async/await gotchas
+- ✅ **Standard libraries** - Works with regular requests, Flask
+- ✅ **Good performance** - Threading provides parallelism where needed
+
+**Threading provides the benefits we need:**
+- ✅ **Parallel replication** - All secondaries contacted simultaneously
+- ✅ **Optimal timing** - Total delay = max(secondary delays)
+- ✅ **Strong consistency** - Waits for all ACKs before success
 
 ## Testing Blocking Replication
 
