@@ -95,25 +95,13 @@ curl http://localhost:5002/messages
 - **Python 3.9+** (for local development)
 - **Network access** between containers
 
-## Architecture Comparison
-
-| Feature | Iteration 0 | Iteration 1 |
-|---------|-------------|-------------|
-| **Protocol** | TCP Sockets | HTTP REST |
-| **Architecture** | Client-Server | Master-Secondary |
-| **Replication** | None | Blocking with ACK |
-| **API** | Socket messages | REST endpoints |
-| **Concurrency** | Multi-threaded | Flask (multi-threaded) |
-| **Storage** | None (echo only) | In-memory lists |
-| **Fault Tolerance** | Basic | Strong consistency |
-
 ## Development Notes
 
 ### Design Decisions
 
 1. **HTTP over Sockets**: Iteration 1 uses HTTP for better interoperability and easier testing
 2. **Blocking Replication**: Ensures strong consistency at the cost of availability
-3. **In-Memory Storage**: Simplifies implementation while demonstrating core concepts
+3. **Storage via Docker Volumes**: Simplifies implementation while demonstrating core concepts
 4. **Configurable Delays**: Allow testing of different replication scenarios
 5. **Docker Containerization**: Enables easy deployment and scaling
 
@@ -133,10 +121,8 @@ curl http://localhost:5002/messages
 
 ## Future Iterations (Planned)
 
-- **Iteration 2**: Add fault tolerance and failure recovery
-- **Iteration 3**: Implement leader election and dynamic membership
-- **Iteration 4**: Add persistent storage and crash recovery
-- **Iteration 5**: Optimize performance with async replication options
+- **Iteration 2**: Add write-concern parameters
+- **Iteration 3**: Implement retry mechanism, deduplication, ordering, heartbeats and quorum
 
 ## Contributing
 
@@ -145,12 +131,4 @@ When adding new iterations:
 1. Create a new `iteration_N` directory
 2. Follow the established project structure
 3. Include comprehensive README and Docker support
-4. Add logging and health check endpoints
-5. Update this main README with the new iteration
-
-## Resources
-
-- [Docker Documentation](https://docs.docker.com/)
-- [Flask Documentation](https://flask.palletsprojects.com/)
-- [Python Socket Programming](https://docs.python.org/3/library/socket.html)
-- [Distributed Systems Concepts](https://en.wikipedia.org/wiki/Distributed_computing)
+4. Update this main README with the new iteration
