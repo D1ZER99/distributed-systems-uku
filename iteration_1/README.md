@@ -161,20 +161,6 @@ def replicate_to_secondaries(self, message_entry):
 | **Parallel Replication (Current)** | O(max delay) | Blocks until all complete | Moderate |
 | **Async Implementation** | O(max delay) | Non-blocking event loop | Complex |
 
-### 🎯 **Why Synchronous Programming?**
-
-**Benefits for learning:**
-- ✅ **Easier to understand** - Linear execution flow
-- ✅ **Simpler debugging** - Stack traces are clear
-- ✅ **Fewer edge cases** - No async/await gotchas
-- ✅ **Standard libraries** - Works with regular requests, Flask
-- ✅ **Good performance** - Threading provides parallelism where needed
-
-**Threading provides the benefits we need:**
-- ✅ **Parallel replication** - All secondaries contacted simultaneously
-- ✅ **Optimal timing** - Total delay = max(secondary delays)
-- ✅ **Strong consistency** - Waits for all ACKs before success
-
 ## Testing Blocking Replication
 
 The system includes configurable delays on secondary servers to demonstrate blocking replication:
