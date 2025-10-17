@@ -14,6 +14,7 @@ services:
     container_name: master
     environment:
       - SECONDARIES=http://secondary-1:5001,http://secondary-2:5002
+      - DATA-DIR=/app/data
     depends_on:
       - secondary-1
       - secondary-2
@@ -35,6 +36,7 @@ services:
       - SECONDARY_HOST=secondary-1
       - REPLICATION_DELAY=2.0
       - MASTER_URL=http://master:5000
+      - DATA_DIR=/app/data
 
   secondary-2:
     build:
@@ -52,7 +54,13 @@ services:
       - SECONDARY_PORT=5002
       - SECONDARY_HOST=secondary-2
       - REPLICATION_DELAY=1.5
-      - MASTER_URL=http://master:5000
+      - MASTER_URL=http://master
+      - DATA_DIR=/app/data
+
+volumes:
+  master-data:
+  secondary1-data:
+  secondary2-data:
 
 networks:
   replicated-log-network:
