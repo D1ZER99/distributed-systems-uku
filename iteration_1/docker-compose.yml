@@ -9,6 +9,8 @@ services:
       - "5000:5000"
     networks:
       - replicated-log-network
+    volumes:
+      - master-data:/app/data
     container_name: master
     environment:
       - SECONDARIES=http://secondary-1:5001,http://secondary-2:5002
@@ -22,6 +24,8 @@ services:
       dockerfile: Dockerfile.secondary
     ports:
       - "5001:5001"
+    volumes:
+      - secondary1-data:/app/data
     networks:
       - replicated-log-network
     container_name: secondary-1
@@ -38,6 +42,8 @@ services:
       dockerfile: Dockerfile.secondary
     ports:
       - "5002:5002"
+    volumes:
+      - secondary2-data:/app/data
     networks:
       - replicated-log-network
     container_name: secondary-2
