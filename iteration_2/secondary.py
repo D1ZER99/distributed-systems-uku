@@ -79,6 +79,17 @@ class SecondaryServer:
         except Exception as e:
             logger.error(f"Error handling GET request: {e}")
             return jsonify({"error": "Internal server error"}), 500
+        
+    def is_duplicate_message(self, message_hash: str) -> bool:
+        """Check if message is a duplicate using hash"""
+        with self.dedup_lock:
+            logger.info(f"Secondary checking hash {message_hash[:8]}... against {len(self.message_hashes)} existing hashes")
+            if message_hash in self.message_hashes:
+                logger.info(f"Duplicate detected: hash {message_hash[:8]}...")
+                return True
+            self.message_hashes.add(message_hash)
+            logger.info(f"New message: added hash {message_hash[:8]}..., total: {len(self.message_hashes)}")
+            return False    
             
     def handle_replication(self):
         """Handle replication requests from master"""
