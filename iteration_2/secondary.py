@@ -108,20 +108,19 @@ class SecondaryServer:
             if not all(field in data for field in required_fields):
                 return jsonify({"error": "Invalid message format"}), 400
                 
-            # Check for duplicate messages using hash
+            # Check for duplicate messages using the new method
             message_hash = data['hash']
-            with self.dedup_lock:
-                if message_hash in self.message_hashes:
-                    logger.info(f"Duplicate message detected (hash: {message_hash[:8]}...), skipping")
-                    return jsonify({
-                        "status": "duplicate",
-                        "message_id": data['id']
-                    }), 200  # Still return success since it's already processed
-                self.message_hashes.add(message_hash)
+            if self.is_duplicate_message(message_hash):
+                logger.info(f"Duplicate message detected, skipping replication")
+                return jsonify({
+                    "status": "duplicate",
+                    "message_id": data['id']
+                }), 200
                 
+            # Rest of the method stays the same...
             message_entry = {
                 "id": data['id'],
-                "message": data['message'],
+                "message": data['message'], 
                 "timestamp": data['timestamp'],
                 "hash": data['hash'],
                 "replicated_at": datetime.now().isoformat(),
@@ -144,7 +143,7 @@ class SecondaryServer:
         except Exception as e:
             logger.error(f"Error handling replication: {e}")
             return jsonify({"error": "Replication failed"}), 500
-            
+                
     def register_with_master(self, master_url: str):
         """Register this secondary server with the master"""
         try:
