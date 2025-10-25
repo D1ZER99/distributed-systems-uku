@@ -34,6 +34,10 @@ class MasterServer:
         self.secondaries: List[str] = []
         self.message_lock = threading.Lock()
         
+        # Separate ID counter with its own lock
+        self.next_id = 1
+        self.counter_lock = threading.Lock()
+        
         # Setup routes
         self.setup_routes()
         
@@ -78,8 +82,13 @@ class MasterServer:
             message_text = data['message']
             timestamp = datetime.now().isoformat()
             
+            # Generate unique ID using separate counter and lock
+            with self.counter_lock:
+                message_id = self.next_id
+                self.next_id += 1
+            
             message_entry = {
-                "id": len(self.messages) + 1,
+                "id": message_id,
                 "message": message_text,
                 "timestamp": timestamp
             }
