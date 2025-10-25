@@ -59,7 +59,8 @@ class ReplicatedLogClient:
             
             if response.status_code == 200:
                 result = response.json()
-                logger.info(f"Retrieved {result['total']} messages from {result.get('server_role', 'unknown')} server")
+                messages = result.get('messages', [])
+                logger.info(f"Retrieved {len(messages)} messages from server")
                 return result
             else:
                 logger.error(f"Failed to get messages: {response.status_code} - {response.text}")
@@ -103,7 +104,8 @@ class ReplicatedLogClient:
         for name, url in servers:
             messages = self.get_messages(url)
             if messages:
-                print(f"   {name}: {messages['total']} messages")
+                message_count = len(messages.get('messages', []))
+                print(f"   {name}: {message_count} messages")
         
         print("\n3. Adding Messages (watch for replication delay):")
         test_messages = [
@@ -125,9 +127,10 @@ class ReplicatedLogClient:
         for name, url in servers:
             messages = self.get_messages(url)
             if messages:
-                print(f"\n   {name} ({messages.get('server_role', 'unknown')}):")
-                print(f"   Total messages: {messages['total']}")
-                for msg in messages['messages'][-3:]:  # Show last 3 messages
+                message_list = messages.get('messages', [])
+                print(f"\n   {name}:")
+                print(f"   Total messages: {len(message_list)}")
+                for msg in message_list[-3:]:  # Show last 3 messages
                     print(f"     - [{msg['id']}] {msg['message']}")
                     
         print("\n=== Demo Complete ===")
