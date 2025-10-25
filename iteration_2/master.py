@@ -293,8 +293,8 @@ class MasterServer:
         
     def run(self, host='0.0.0.0', port=5000):
         """Run the master server"""
-        logger.info(f"Starting Master server on {host}:{port}")
-        self.app.run(host=host, port=port, debug=False)
+        logger.info(f"Starting Master server on {host}:{port} with threading enabled")
+        self.app.run(host=host, port=port, debug=False, threaded=True) # Enable threading for concurrent requests
 
 if __name__ == "__main__":
     master = MasterServer()
