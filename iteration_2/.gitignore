@@ -1,1 +1,3 @@
 __pycache__/
+acceptance_test.py
+concurrent_test.py
