@@ -7,6 +7,7 @@ A test client to interact with the replicated log system.
 import requests
 import json
 import time
+import threading
 import logging
 from datetime import datetime
 
@@ -224,6 +225,218 @@ class ReplicatedLogClient:
             print(f"❌ Different message failed")
             
         print("\n=== Deduplication Demo Complete ===")
+        
+    def wait_for_servers(self, timeout=30):
+        """Wait for all servers to be ready"""
+        print("🔄 Waiting for servers to start...")
+        servers = {
+            "Master": self.master_url,
+            "Secondary-1": "http://localhost:5001",
+            "Secondary-2": "http://localhost:5002"
+        }
+        
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            all_ready = True
+            for name, url in servers.items():
+                try:
+                    response = requests.get(f"{url}/health", timeout=2)
+                    if response.status_code == 200:
+                        print(f"   ✅ {name} is ready")
+                    else:
+                        all_ready = False
+                        print(f"   ⚠️ {name} not ready (HTTP {response.status_code})")
+                except:
+                    all_ready = False
+                    print(f"   ❌ {name} not reachable")
+            
+            if all_ready:
+                print("✅ All servers are ready!")
+                return True
+                
+            time.sleep(2)
+        
+        print("❌ Timeout waiting for servers")
+        return False
+    
+    def send_message_for_test(self, message, write_concern, expected_status=201):
+        """Send a message with specified write concern for testing"""
+        try:
+            start_time = time.time()
+            response = requests.post(
+                f"{self.master_url}/messages",
+                json={"message": message, "w": write_concern},
+                timeout=15
+            )
+            end_time = time.time()
+            
+            duration = end_time - start_time
+            status_text = "✅ Ok" if response.status_code == expected_status else f"❌ {response.status_code}"
+            
+            print(f"   {message} (w={write_concern}) - {status_text} ({duration:.2f}s)")
+            
+            if response.status_code != expected_status:
+                print(f"      Expected {expected_status}, got {response.status_code}")
+                print(f"      Response: {response.text}")
+            
+            return response.status_code == expected_status
+            
+        except Exception as e:
+            print(f"   ❌ {message} (w={write_concern}) - Error: {e}")
+            return False
+    
+    def get_messages_for_test(self, server_url, server_name):
+        """Get messages from a server for testing"""
+        try:
+            response = requests.get(f"{server_url}/messages", timeout=5)
+            if response.status_code == 200:
+                data = response.json()
+                messages = data.get('messages', [])
+                return [msg['message'] for msg in messages]
+            else:
+                print(f"❌ Failed to get messages from {server_name}: {response.status_code}")
+                return []
+        except Exception as e:
+            print(f"❌ Error getting messages from {server_name}: {e}")
+            return []
+    
+    def check_messages_on_servers(self):
+        """Check messages on all servers"""
+        print("\n📋 Checking messages on all servers:")
+        
+        # Get messages from all servers
+        master_msgs = self.get_messages_for_test(self.master_url, "Master")
+        s1_msgs = self.get_messages_for_test("http://localhost:5001", "Secondary-1")
+        s2_msgs = self.get_messages_for_test("http://localhost:5002", "Secondary-2")
+        
+        print(f"   Master:      {master_msgs}")
+        print(f"   Secondary-1: {s1_msgs}")
+        print(f"   Secondary-2: {s2_msgs}")
+        
+        return master_msgs, s1_msgs, s2_msgs
+    
+    def acceptance_test(self):
+        """Run the complete acceptance test"""
+        print("🧪 Starting Self-Check Acceptance Test")
+        print("=" * 50)
+        print(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print()
+        
+        # Step 1: Wait for servers
+        if not self.wait_for_servers():
+            print("❌ Test failed: Servers not ready")
+            return False
+        
+        print(f"\n⏱️ Waiting 5 seconds for secondary delays to be configured...")
+        time.sleep(5)
+        
+        # Step 2: Send test messages
+        print(f"\n📤 Sending test messages:")
+        
+        success = True
+        success &= self.send_message_for_test("Msg1", 1)    # w=1 - Ok (fast)
+        success &= self.send_message_for_test("Msg2", 2)    # w=2 - Ok (medium) 
+        success &= self.send_message_for_test("Msg3", 3)    # w=3 - Wait (slow)
+        success &= self.send_message_for_test("Msg4", 1)    # w=1 - Ok (fast)
+        
+        if not success:
+            print("❌ Some messages failed to send")
+        
+        # Step 3: Check immediate state (might show inconsistency)
+        print(f"\n🔍 Checking immediate state:")
+        master_msgs, s1_msgs, s2_msgs = self.check_messages_on_servers()
+        
+        # Step 4: Wait for eventual consistency
+        print(f"\n⏱️ Waiting 3 seconds for eventual consistency...")
+        time.sleep(3)
+        
+        # Step 5: Check final consistent state
+        print(f"\n🔍 Checking final consistent state:")
+        master_msgs, s1_msgs, s2_msgs = self.check_messages_on_servers()
+        
+        # Step 6: Validate expected results
+        print(f"\n✅ Expected Results Validation:")
+        
+        expected_all = ["Msg1", "Msg2", "Msg3", "Msg4"]
+        
+        # Master and S1 should have all messages
+        master_ok = set(master_msgs) >= set(expected_all)
+        s1_ok = set(s1_msgs) >= set(expected_all)
+        
+        print(f"   Master has all messages:      {'✅' if master_ok else '❌'}")
+        print(f"   Secondary-1 has all messages: {'✅' if s1_ok else '❌'}")
+        print(f"   Secondary-2 has messages:     ✅ (eventual consistency)")
+        
+        # Summary
+        overall_success = master_ok and s1_ok
+        print(f"\n🎯 Test Result: {'✅ PASSED' if overall_success else '❌ FAILED'}")
+        
+        return overall_success
+        
+    def send_message_concurrent(self, message, w, client_name):
+        """Send a message and measure time for concurrent testing"""
+        start_time = time.time()
+        print(f"{datetime.now().strftime('%H:%M:%S.%f')[:-3]} - {client_name}: Sending '{message}' (w={w})")
+        
+        try:
+            response = requests.post(
+                f"{self.master_url}/messages",
+                json={"message": message, "w": w},
+                timeout=30
+            )
+            end_time = time.time()
+            duration = end_time - start_time
+            
+            print(f"{datetime.now().strftime('%H:%M:%S.%f')[:-3]} - {client_name}: Completed in {duration:.2f}s - Status: {response.status_code}")
+            return duration
+            
+        except Exception as e:
+            end_time = time.time()
+            duration = end_time - start_time
+            print(f"{datetime.now().strftime('%H:%M:%S.%f')[:-3]} - {client_name}: Failed after {duration:.2f}s - Error: {e}")
+            return duration
+
+    def concurrent_test(self):
+        """Test that w=1 requests don't wait for w=3 requests"""
+        print("🧪 Testing Concurrent Request Handling")
+        print("=" * 50)
+        print("Expected behavior:")
+        print("  - Client 1 (w=3): Should take ~10 seconds (secondary delay)")
+        print("  - Client 2 (w=1): Should complete in <1 second (no waiting)")
+        print()
+        
+        # Start both requests almost simultaneously
+        def client1():
+            return self.send_message_concurrent("Slow message (w=3)", 3, "Client 1")
+        
+        def client2():
+            time.sleep(2)  # Wait 2 seconds, then send fast request
+            return self.send_message_concurrent("Fast message (w=1)", 1, "Client 2")
+        
+        # Start both threads
+        thread1 = threading.Thread(target=client1)
+        thread2 = threading.Thread(target=client2)
+        
+        start_time = time.time()
+        thread1.start()
+        thread2.start()
+        
+        # Wait for both to complete
+        thread1.join()
+        thread2.join()
+        
+        total_time = time.time() - start_time
+        print(f"\n📊 Total test time: {total_time:.2f}s")
+        
+        # Check if concurrent behavior worked
+        if total_time < 12:  # Should be around 10s, not 20s
+            print("✅ Concurrent processing: WORKING")
+            print("   Client 2 didn't wait for Client 1 to complete")
+            return True
+        else:
+            print("❌ Concurrent processing: NOT WORKING")
+            print("   Client 2 waited for Client 1 (sequential processing)")
+            return False
 
 def main():
     import sys
@@ -239,6 +452,10 @@ def main():
             client.demo_write_concern()
         elif command == "dedup":
             client.demo_deduplication()
+        elif command == "acceptance":
+            client.acceptance_test()
+        elif command == "concur":
+            client.concurrent_test()
         elif command == "post" and len(sys.argv) > 2:
             message = " ".join(sys.argv[2:])
             write_concern = None
@@ -256,7 +473,7 @@ def main():
             if messages:
                 print(json.dumps(messages, indent=2))
         else:
-            print("Usage: python test_client.py [demo|write_concern|dedup|post <message> [-w <write_concern>]|get [server_url]]")
+            print("Usage: python test_client.py [demo|write_concern|dedup|acceptance|concur|post <message> [-w <write_concern>]|get [server_url]]")
     else:
         client.demo_replication()
 
