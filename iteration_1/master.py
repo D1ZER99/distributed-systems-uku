@@ -118,9 +118,7 @@ class MasterServer:
             logger.info(f"Returning {len(messages_copy)} messages")
             
             return jsonify({
-                "messages": messages_copy,
-                "total": len(messages_copy),
-                "server_role": "master"
+                "messages": messages_copy
             }), 200
             
         except Exception as e:
