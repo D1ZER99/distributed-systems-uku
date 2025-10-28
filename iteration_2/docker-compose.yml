@@ -53,8 +53,8 @@ services:
       - SERVER_ID=secondary-2
       - SECONDARY_PORT=5002
       - SECONDARY_HOST=secondary-2
-      - REPLICATION_DELAY=1.5
-      - MASTER_URL=http://master
+      - REPLICATION_DELAY=10.0
+      - MASTER_URL=http://master:5000
       - DATA_DIR=/app/data
 
 volumes:

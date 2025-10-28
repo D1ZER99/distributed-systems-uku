@@ -315,11 +315,47 @@ class ReplicatedLogClient:
         
         return master_msgs, s1_msgs, s2_msgs
     
+    def get_messages_detailed(self, server_url, server_name):
+        """Get full message objects from a server for detailed testing"""
+        try:
+            response = requests.get(f"{server_url}/messages", timeout=5)
+            if response.status_code == 200:
+                data = response.json()
+                messages = data.get('messages', [])
+                return messages
+            else:
+                print(f"❌ Failed to get messages from {server_name}: {response.status_code}")
+                return []
+        except Exception as e:
+            print(f"❌ Error getting messages from {server_name}: {e}")
+            return []
+    
+    def check_messages_on_servers_detailed(self):
+        """Check full message objects on all servers"""
+        # Get full message objects from all servers
+        master_msgs = self.get_messages_detailed(self.master_url, "Master")
+        s1_msgs = self.get_messages_detailed("http://localhost:5001", "Secondary-1")
+        s2_msgs = self.get_messages_detailed("http://localhost:5002", "Secondary-2")
+        
+        return master_msgs, s1_msgs, s2_msgs
+    
     def acceptance_test(self):
-        """Run the complete acceptance test"""
-        print("🧪 Starting Self-Check Acceptance Test")
-        print("=" * 50)
+        """Run the professor's specific acceptance test
+        
+        Requirements:
+        - Secondary-2 has 10-sec delay
+        - Send 4 messages: Msg1(w=1), Msg2(w=2), Msg3(w=3), Msg4(w=1)
+        - Check during delay: M+S1 should have all 4, S2 should have only Msg1,2,3
+        - Check after delay: All servers should have all 4 messages in correct order
+        """
+        print("🧪 Professor's Self-Check Acceptance Test")
+        print("=" * 60)
         print(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print("📋 Test Requirements:")
+        print("   - Secondary-2 has 10-second replication delay")
+        print("   - Send Msg1(w=1), Msg2(w=2), Msg3(w=3), Msg4(w=1)")
+        print("   - During delay: Master+S1 have all 4, S2 has only first 3")
+        print("   - After delay: All servers have all 4 in correct order")
         print()
         
         # Step 1: Wait for servers
@@ -327,49 +363,138 @@ class ReplicatedLogClient:
             print("❌ Test failed: Servers not ready")
             return False
         
-        print(f"\n⏱️ Waiting 5 seconds for secondary delays to be configured...")
-        time.sleep(5)
-        
-        # Step 2: Send test messages
-        print(f"\n📤 Sending test messages:")
-        
-        success = True
-        success &= self.send_message_for_test("Msg1", 1)    # w=1 - Ok (fast)
-        success &= self.send_message_for_test("Msg2", 2)    # w=2 - Ok (medium) 
-        success &= self.send_message_for_test("Msg3", 3)    # w=3 - Wait (slow)
-        success &= self.send_message_for_test("Msg4", 1)    # w=1 - Ok (fast)
-        
-        if not success:
-            print("❌ Some messages failed to send")
-        
-        # Step 3: Check immediate state (might show inconsistency)
-        print(f"\n🔍 Checking immediate state:")
-        master_msgs, s1_msgs, s2_msgs = self.check_messages_on_servers()
-        
-        # Step 4: Wait for eventual consistency
-        print(f"\n⏱️ Waiting 3 seconds for eventual consistency...")
+        print(f"⏱️ Waiting 3 seconds for servers to be fully ready...")
         time.sleep(3)
         
-        # Step 5: Check final consistent state
-        print(f"\n🔍 Checking final consistent state:")
-        master_msgs, s1_msgs, s2_msgs = self.check_messages_on_servers()
+        # Step 2: Send the 4 specific test messages
+        print(f"\n📤 Sending test messages:")
         
-        # Step 6: Validate expected results
-        print(f"\n✅ Expected Results Validation:")
+        test_start_time = datetime.now()
+        print(f"🕐 Test started at: {test_start_time.strftime('%H:%M:%S')}")
+        
+        # Send messages as specified by professor
+        messages_sent = []
+        test_cases = [
+            ("Msg1", 1),  # Should reach all immediately 
+            ("Msg2", 2),  # Should reach Master + S1, wait for S2
+            ("Msg3", 3),  # Should wait for all (including S2 with 10s delay)
+            ("Msg4", 1),  # Should reach all immediately after Msg3 completes
+        ]
+        
+        for msg_name, w in test_cases:
+            print(f"   Sending {msg_name} with write concern w={w}...")
+            send_time = datetime.now()
+            success = self.send_message_for_test(msg_name, w)
+            complete_time = datetime.now()
+            duration = (complete_time - send_time).total_seconds()
+            print(f"   {msg_name} completed in {duration:.2f}s - {'✅' if success else '❌'}")
+            messages_sent.append((msg_name, w, success, duration))
+            
+        all_sent_time = datetime.now()
+        total_duration = (all_sent_time - test_start_time).total_seconds()
+        print(f"🕐 All messages sent by: {all_sent_time.strftime('%H:%M:%S')} (total: {total_duration:.2f}s)")
+        
+        # Step 3: Check state DURING the 10-second delay
+        # We need to check quickly after Msg3 is sent but before S2 delay expires
+        print(f"\n🔍 Checking state DURING 10-second delay:")
+        delay_check_time = datetime.now()
+        print(f"� Checking at: {delay_check_time.strftime('%H:%M:%S')}")
+        
+        during_delay_results = self.check_messages_on_servers_detailed()
+        master_during, s1_during, s2_during = during_delay_results
+        
+        print(f"   📊 During delay results:")
+        print(f"      Master:      {len(master_during)} messages: {[m['message'] for m in master_during]}")
+        print(f"      Secondary-1: {len(s1_during)} messages: {[m['message'] for m in s1_during]}")  
+        print(f"      Secondary-2: {len(s2_during)} messages: {[m['message'] for m in s2_during]}")
+        
+        # Step 4: Wait for the 10-second delay to complete
+        elapsed_since_start = (datetime.now() - test_start_time).total_seconds()
+        remaining_wait = max(0, 12 - elapsed_since_start)  # 12s to be safe
+        
+        if remaining_wait > 0:
+            print(f"\n⏱️ Waiting {remaining_wait:.1f}s for Secondary-2 delay to complete...")
+            time.sleep(remaining_wait)
+        
+        # Step 5: Check final state AFTER the delay
+        print(f"\n🔍 Checking final state AFTER delay:")
+        after_delay_time = datetime.now()
+        print(f"� Checking at: {after_delay_time.strftime('%H:%M:%S')}")
+        
+        after_delay_results = self.check_messages_on_servers_detailed()
+        master_after, s1_after, s2_after = after_delay_results
+        
+        print(f"   📊 After delay results:")
+        print(f"      Master:      {len(master_after)} messages: {[m['message'] for m in master_after]}")
+        print(f"      Secondary-1: {len(s1_after)} messages: {[m['message'] for m in s1_after]}")
+        print(f"      Secondary-2: {len(s2_after)} messages: {[m['message'] for m in s2_after]}")
+        
+        # Step 6: Validate expected results according to professor's requirements
+        print(f"\n✅ Validation against Professor's Requirements:")
         
         expected_all = ["Msg1", "Msg2", "Msg3", "Msg4"]
+        expected_s2_during = ["Msg1", "Msg2", "Msg3"]  # Only first 3 during delay
         
-        # Master and S1 should have all messages
-        master_ok = set(master_msgs) >= set(expected_all)
-        s1_ok = set(s1_msgs) >= set(expected_all)
+        # During delay validation
+        master_during_msgs = [m['message'] for m in master_during]
+        s1_during_msgs = [m['message'] for m in s1_during]
+        s2_during_msgs = [m['message'] for m in s2_during]
         
-        print(f"   Master has all messages:      {'✅' if master_ok else '❌'}")
-        print(f"   Secondary-1 has all messages: {'✅' if s1_ok else '❌'}")
-        print(f"   Secondary-2 has messages:     ✅ (eventual consistency)")
+        master_during_ok = all(msg in master_during_msgs for msg in expected_all)
+        s1_during_ok = all(msg in s1_during_msgs for msg in expected_all)
+        s2_during_ok = (all(msg in s2_during_msgs for msg in expected_s2_during) and 
+                       "Msg4" not in s2_during_msgs)
         
-        # Summary
-        overall_success = master_ok and s1_ok
+        print(f"   📋 During 10-second delay:")
+        print(f"      Master has all 4 messages:        {'✅' if master_during_ok else '❌'}")
+        print(f"      Secondary-1 has all 4 messages:   {'✅' if s1_during_ok else '❌'}")  
+        print(f"      Secondary-2 has only first 3:     {'✅' if s2_during_ok else '❌'}")
+        
+        # After delay validation
+        master_after_msgs = [m['message'] for m in master_after]
+        s1_after_msgs = [m['message'] for m in s1_after]
+        s2_after_msgs = [m['message'] for m in s2_after]
+        
+        master_after_ok = all(msg in master_after_msgs for msg in expected_all)
+        s1_after_ok = all(msg in s1_after_msgs for msg in expected_all)
+        s2_after_ok = all(msg in s2_after_msgs for msg in expected_all)
+        
+        # Check correct order (sequence should be preserved)
+        def check_order(messages, expected):
+            msg_names = [m['message'] for m in messages]
+            for i, expected_msg in enumerate(expected):
+                if expected_msg not in msg_names:
+                    return False
+                # Find the index of this message
+                actual_index = msg_names.index(expected_msg)
+                # Check that all previous expected messages come before this one
+                for j in range(i):
+                    prev_expected = expected[j]
+                    if prev_expected in msg_names:
+                        prev_index = msg_names.index(prev_expected)
+                        if prev_index > actual_index:
+                            return False
+            return True
+        
+        master_order_ok = check_order(master_after, expected_all)
+        s1_order_ok = check_order(s1_after, expected_all)
+        s2_order_ok = check_order(s2_after, expected_all)
+        
+        print(f"   📋 After 10-second delay:")
+        print(f"      Master has all 4 messages:        {'✅' if master_after_ok else '❌'}")
+        print(f"      Secondary-1 has all 4 messages:   {'✅' if s1_after_ok else '❌'}")
+        print(f"      Secondary-2 has all 4 messages:   {'✅' if s2_after_ok else '❌'}")
+        print(f"      Messages in correct order:        {'✅' if (master_order_ok and s1_order_ok and s2_order_ok) else '❌'}")
+        
+        # Overall test result
+        during_delay_success = master_during_ok and s1_during_ok and s2_during_ok
+        after_delay_success = master_after_ok and s1_after_ok and s2_after_ok and master_order_ok and s1_order_ok and s2_order_ok
+        overall_success = during_delay_success and after_delay_success
+        
         print(f"\n🎯 Test Result: {'✅ PASSED' if overall_success else '❌ FAILED'}")
+        if not overall_success:
+            print(f"   During delay check: {'✅' if during_delay_success else '❌'}")
+            print(f"   After delay check:  {'✅' if after_delay_success else '❌'}")
         
         return overall_success
         

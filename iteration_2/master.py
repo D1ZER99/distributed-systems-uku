@@ -245,16 +245,49 @@ class MasterServer:
         return success_count == len(self.secondaries)
         
     def replicate_to_secondaries_with_concern(self, message_entry: Dict, acks_needed: int) -> int:
-        """Replicate message to secondaries and return count of acknowledgments received"""
+        """Replicate message to secondaries and return once enough ACKs received"""
         if not self.secondaries:
             logger.warning("No secondary servers to replicate to")
             return 0  # No secondaries available
             
         logger.info(f"Starting replication to {len(self.secondaries)} secondaries, need {acks_needed} ACKs")
         
-        # Use threading to send to all secondaries in parallel
+        # If no ACKs needed (w=1), we can return immediately after starting replication
+        if acks_needed <= 0:
+            logger.info(f"No ACKs needed (w=1), starting background replication and returning immediately")
+            
+            # Start replication in background threads but don't wait
+            def replicate_to_secondary_background(secondary_url: str):
+                try:
+                    logger.info(f"Background replication starting to {secondary_url}")
+                    response = requests.post(
+                        f"{secondary_url}/replicate",
+                        json=message_entry,
+                        timeout=30  # 30 seconds timeout
+                    )
+                    
+                    if response.status_code == 200:
+                        logger.info(f"Background replication successful to {secondary_url}")
+                    else:
+                        logger.error(f"Background replication failed to {secondary_url}: {response.status_code}")
+                        
+                except Exception as e:
+                    logger.error(f"Background replication error to {secondary_url}: {e}")
+                    
+            # Start background replication threads
+            for secondary_url in self.secondaries:
+                thread = threading.Thread(target=replicate_to_secondary_background, args=(secondary_url,))
+                thread.daemon = True  # Don't block shutdown
+                thread.start()
+                logger.info(f"Started background replication thread for {secondary_url}")
+                
+            logger.info(f"Returning immediately for w=1 without waiting")
+            return 0  # Return immediately for w=1
+        
+        # For w>1, we need to wait for ACKs
         threads = []
         results = {}
+        results_lock = threading.Lock()
         
         def replicate_to_secondary(secondary_url: str):
             try:
@@ -264,16 +297,18 @@ class MasterServer:
                     timeout=30  # 30 seconds timeout
                 )
                 
-                if response.status_code == 200:
-                    results[secondary_url] = True
-                    logger.info(f"Successfully replicated to {secondary_url}")
-                else:
-                    results[secondary_url] = False
-                    logger.error(f"Failed to replicate to {secondary_url}: {response.status_code}")
-                    
+                with results_lock:
+                    if response.status_code == 200:
+                        results[secondary_url] = True
+                        logger.info(f"Successfully replicated to {secondary_url}")
+                    else:
+                        results[secondary_url] = False
+                        logger.error(f"Failed to replicate to {secondary_url}: {response.status_code}")
+                        
             except Exception as e:
-                results[secondary_url] = False
-                logger.error(f"Error replicating to {secondary_url}: {e}")
+                with results_lock:
+                    results[secondary_url] = False
+                    logger.error(f"Error replicating to {secondary_url}: {e}")
                 
         # Start replication threads
         for secondary_url in self.secondaries:
@@ -281,13 +316,31 @@ class MasterServer:
             thread.start()
             threads.append(thread)
             
-        # Wait for all threads to complete
-        for thread in threads:
-            thread.join()
-            
-        # Count successful acknowledgments
-        acks_received = sum(1 for success in results.values() if success)
+        # Wait until we have enough ACKs or all threads complete
+        import time
+        start_time = time.time()
+        max_wait_time = 30  # Maximum wait time in seconds
         
+        while time.time() - start_time < max_wait_time:
+            with results_lock:
+                acks_received = sum(1 for success in results.values() if success)
+                
+            # If we have enough ACKs, we can return early
+            if acks_received >= acks_needed:
+                logger.info(f"Write concern satisfied: {acks_received}/{acks_needed} ACKs received")
+                return acks_received
+                
+            # Check if all threads are done
+            all_done = all(not thread.is_alive() for thread in threads)
+            if all_done:
+                break
+                
+            time.sleep(0.1)  # Small delay before checking again
+            
+        # Final count after timeout or all threads complete
+        with results_lock:
+            acks_received = sum(1 for success in results.values() if success)
+            
         logger.info(f"Replication completed: {acks_received}/{len(self.secondaries)} acknowledged")
         
         return acks_received
