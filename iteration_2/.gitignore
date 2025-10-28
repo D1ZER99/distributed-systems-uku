@@ -1,4 +1,5 @@
 __pycache__/
 
-acceptance_test.py
-concurrent_test.py
+_acceptance_test.py
+_concurrent_test.py
+_self_check_test.py
