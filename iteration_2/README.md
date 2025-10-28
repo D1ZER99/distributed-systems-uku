@@ -207,6 +207,12 @@ python test_client.py post "Hello World" -w 2
 
 # Regular demo (backward compatibility)
 python test_client.py demo
+
+# Self-check acceptance check
+python test_client.py acceptance
+
+# Parallel processing (client with wc=1 right after client wc=3 is not waiting for client wc=3 request to end)
+python test_client.py concur
 ```
 
 ## Performance vs. Consistency Trade-offs
