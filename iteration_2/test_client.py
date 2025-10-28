@@ -18,6 +18,8 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger('TestClient')
+        
+        # Step 3: Check state DURING the 10-second delaynt')
 
 class ReplicatedLogClient:
     def __init__(self, master_url='http://localhost:5000'):
@@ -354,7 +356,7 @@ class ReplicatedLogClient:
         print("📋 Test Requirements:")
         print("   - Secondary-2 has 10-second replication delay")
         print("   - Send Msg1(w=1), Msg2(w=2), Msg3(w=3), Msg4(w=1)")
-        print("   - During delay: Master has all 4, S1&S2 have only first 3 (Msg4 still replicating)")
+        print("   - During delay: Master+S1 have all 4, S2 has only first 3")
         print("   - After delay: All servers have all 4 in correct order")
         print()
         
@@ -393,6 +395,10 @@ class ReplicatedLogClient:
         all_sent_time = datetime.now()
         total_duration = (all_sent_time - test_start_time).total_seconds()
         print(f"🕐 All messages sent by: {all_sent_time.strftime('%H:%M:%S')} (total: {total_duration:.2f}s)")
+        
+        # Small delay to allow Msg4 to reach Secondary-1 (which has 2s delay)
+        print(f"\n⏱️ Waiting 3 seconds for Msg4 to reach Secondary-1...")
+        time.sleep(3)
         
         # Step 3: Check state DURING the 10-second delay
         # We need to check quickly after Msg3 is sent but before S2 delay expires
@@ -446,14 +452,13 @@ class ReplicatedLogClient:
         s2_during_msgs = [m['message'] for m in s2_during]
         
         master_during_ok = all(msg in master_during_msgs for msg in expected_all)
-        s1_during_ok = (all(msg in s1_during_msgs for msg in expected_s2_during) and 
-                       "Msg4" not in s1_during_msgs)  # S1 also shouldn't have Msg4 yet
+        s1_during_ok = all(msg in s1_during_msgs for msg in expected_all)  # S1 should have all 4
         s2_during_ok = (all(msg in s2_during_msgs for msg in expected_s2_during) and 
                        "Msg4" not in s2_during_msgs)
         
         print(f"   📋 During 10-second delay:")
         print(f"      Master has all 4 messages:        {'✅' if master_during_ok else '❌'}")
-        print(f"      Secondary-1 has only first 3:     {'✅' if s1_during_ok else '❌'}")  
+        print(f"      Secondary-1 has all 4 messages:   {'✅' if s1_during_ok else '❌'}")  
         print(f"      Secondary-2 has only first 3:     {'✅' if s2_during_ok else '❌'}")
         
         # After delay validation
