@@ -200,7 +200,7 @@ class SecondaryServer:
                 daemon=True
             ).start()
             
-        self.app.run(host=host, port=port, debug=False)
+        self.app.run(host=host, port=port, debug=False, threaded=True)
 
 if __name__ == "__main__":
     secondary = SecondaryServer()
