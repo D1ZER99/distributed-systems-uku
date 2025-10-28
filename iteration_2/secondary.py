@@ -89,7 +89,26 @@ class SecondaryServer:
                 return True
             self.message_hashes.add(message_hash)
             logger.info(f"New message: added hash {message_hash[:8]}..., total: {len(self.message_hashes)}")
-            return False    
+            return False
+            
+    def insert_in_sequence_order(self, message_entry: Dict):
+        """Insert message maintaining sequence order"""
+        sequence = message_entry['sequence']
+        
+        # Find correct position to insert based on sequence number
+        insert_pos = 0
+        for i, existing_msg in enumerate(self.messages):
+            if existing_msg['sequence'] > sequence:
+                break
+            insert_pos = i + 1
+        
+        # Insert at correct position
+        self.messages.insert(insert_pos, message_entry)
+        logger.info(f"Inserted message {message_entry['id']} at position {insert_pos} based on sequence {sequence}")
+        
+        # Log current message order for debugging
+        sequences = [msg['sequence'] for msg in self.messages]
+        logger.debug(f"Current message sequence order: {sequences}")    
             
     def handle_replication(self):
         """Handle replication requests from master"""
@@ -104,7 +123,7 @@ class SecondaryServer:
                 return jsonify({"error": "No data provided"}), 400
                 
             # Validate message structure
-            required_fields = ['id', 'message', 'timestamp', 'hash']
+            required_fields = ['id', 'sequence', 'message', 'timestamp', 'hash']
             if not all(field in data for field in required_fields):
                 return jsonify({"error": "Invalid message format"}), 400
                 
@@ -120,6 +139,7 @@ class SecondaryServer:
             # Rest of the method stays the same...
             message_entry = {
                 "id": data['id'],
+                "sequence": data['sequence'],  # Preserve sequence number
                 "message": data['message'], 
                 "timestamp": data['timestamp'],
                 "hash": data['hash'],
@@ -127,10 +147,10 @@ class SecondaryServer:
                 "replicated_by": self.server_id
             }
             
-            # Add message to secondary's list
+            # Insert message in sequence order instead of simple append
             with self.message_lock:
-                self.messages.append(message_entry)
-                logger.info(f"Replicated message {message_entry['id']}: {message_entry['message']}")
+                self.insert_in_sequence_order(message_entry)
+                logger.info(f"Replicated message {message_entry['id']} (seq: {message_entry['sequence']}): {message_entry['message']}")
                     
             # Send ACK back to master
             return jsonify({

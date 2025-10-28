@@ -124,6 +124,7 @@ class MasterServer:
             
             message_entry = {
                 "id": message_id,
+                "sequence": message_id,  # Use ID as sequence number for ordering
                 "message": message_text,
                 "timestamp": timestamp,
                 "hash": message_hash
