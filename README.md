@@ -193,12 +193,12 @@ curl http://localhost:5002/messages
 ### Distributed Systems Concepts Implemented
 
 - ✅ **Tunable Consistency**: Write concern parameters (w=1,2,3) allow trading consistency for performance
-- ✅ **Message Deduplication**: SHA256-based duplicate detection prevents message replay
 - ✅ **Total Ordering**: Sequence numbers ensure consistent message ordering across all replicas
+- ✅ **Self-check Acceptance Test**
+- ✅ **Message Deduplication**: SHA256-based duplicate detection prevents message replay
 - ✅ **Concurrent Processing**: Background replication and threading enable simultaneous request handling
 - ✅ **Semi-Synchronous Replication**: Combines benefits of synchronous and asynchronous approaches
 - ✅ **Fault Tolerance**: Graceful handling of secondary failures with partial success responses
-- ✅ **Professor's Acceptance Tests**: Meets all specified academic requirements for distributed systems
 
 ### Technical Excellence
 
@@ -217,3 +217,8 @@ When adding new iterations:
 2. Follow the established project structure
 3. Include comprehensive README and Docker support
 4. Update this main README with the new iteration
+
+## Future iterations
+
+1. Update __iteration_2__ if needed
+2. Implement __iteration_3__ with __retry__, __deduplication__, __total order__, __heartbeats__ and __quourum append__ (last two are optional)
