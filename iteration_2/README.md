@@ -17,7 +17,7 @@ Client --> Master --> Secondary-1
 
 ## Key Features - Iteration 2
 
-- **Tunable Write Concern (w parameter)**: Client controls how many replicas must acknowledge
+- **Tunable Write Concern (w parameter)**: Client controls how many replicas must acknowledge (*regardless of write concern value chosen messages will be replicated to all the nodes*):
   - `w=1`: Master only (fastest, lowest consistency)
   - `w=2`: Master + 1 secondary (balanced)
   - `w=3`: Master + all secondaries (highest consistency, slower)
@@ -220,7 +220,7 @@ Write concern allows you to choose your trade-off:
 
 - **w=1**: ~0ms delay (instant response after master write)
 - **w=2**: ~1.5s delay (wait for fastest secondary)  
-- **w=3**: ~2.0s delay (wait for slowest secondary)
+- **w=3**: ~10.0s delay (wait for slowest secondary)
 
 ## Consistency Scenarios
 
@@ -263,6 +263,7 @@ Each component generates detailed logs:
    - Master sends message to ALL secondaries in parallel
    - Master waits for ACKs from (w-1) secondaries (since master counts as 1)
    - Master responds to client when enough ACKs received or timeout occurs
+   - Message replicated to all the nodes regardless of write concern parameter
 
 3. **Fault Tolerance:**
    - If insufficient secondaries acknowledge, POST returns 202 (partial success)
