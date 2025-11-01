@@ -10,10 +10,9 @@ import json
 import time
 import threading
 import requests
-import hashlib
 from datetime import datetime
 from flask import Flask, request, jsonify
-from typing import List, Dict, Set
+from typing import List, Dict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import os
 
@@ -31,7 +30,7 @@ logger = logging.getLogger('Master')
 
 class MasterServer:
     def __init__(self):
-        print("DEDUPLICATION FEATURE ENABLED - MASTER V2")  # Debug marker
+        print("MASTER SERVER V2 - NO DEDUPLICATION")  # Debug marker
         self.app = Flask(__name__)
         self.messages: List[Dict] = []
         self.secondaries: List[str] = []
@@ -40,10 +39,6 @@ class MasterServer:
         # Separate ID counter with its own lock
         self.next_id = 1
         self.counter_lock = threading.Lock()
-        
-        # Message deduplication
-        self.message_hashes: Set[str] = set()
-        self.dedup_lock = threading.Lock()
         
         # Setup routes
         self.setup_routes()
@@ -59,21 +54,6 @@ class MasterServer:
             logger.info(f"Loaded {len(self.secondaries)} secondary servers: {self.secondaries}")
         else:
             logger.warning("No secondary servers configured")
-            
-    def compute_message_hash(self, message_text: str) -> str:
-        """Compute a hash for message deduplication based only on content"""
-        # Create hash based only on message content for proper deduplication
-        return hashlib.sha256(message_text.encode('utf-8')).hexdigest()
-        
-    def is_duplicate_message(self, message_hash: str) -> bool:
-        """Check if message is a duplicate"""
-        with self.dedup_lock:
-            logger.info(f"Checking hash {message_hash[:8]}... against {len(self.message_hashes)} existing hashes")
-            if message_hash in self.message_hashes:
-                return True
-            self.message_hashes.add(message_hash)
-            logger.info(f"Added new hash {message_hash[:8]}..., total hashes: {len(self.message_hashes)}")
-            return False
             
     def setup_routes(self):
         """Setup Flask routes"""
@@ -106,13 +86,6 @@ class MasterServer:
             write_concern = data.get('w', len(self.secondaries) + 1)
             timestamp = datetime.now().isoformat()
             
-            # Check for message deduplication
-            message_hash = self.compute_message_hash(message_text)
-            logger.info(f"Computed hash for message '{message_text}': {message_hash[:8]}...")
-            if self.is_duplicate_message(message_hash):
-                logger.info(f"Duplicate message detected: {message_text}")
-                return jsonify({"error": "Duplicate message"}), 409  # Conflict status
-            
             # Validate write concern
             max_w = len(self.secondaries) + 1  # Master + all secondaries
             if write_concern < 1 or write_concern > max_w:
@@ -127,8 +100,7 @@ class MasterServer:
                 "id": message_id,
                 "sequence": message_id,  # Use ID as sequence number for ordering
                 "message": message_text,
-                "timestamp": timestamp,
-                "hash": message_hash
+                "timestamp": timestamp
             }
             
             logger.info(f"Received POST request with message: {message_text}, write concern: {write_concern}")
