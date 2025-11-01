@@ -70,10 +70,18 @@ class SecondaryServer:
             with self.message_lock:
                 messages_copy = self.messages.copy()
                 
-            logger.info(f"Returning {len(messages_copy)} replicated messages")
+            # Return only essential fields to client (id and message)
+            client_messages = []
+            for msg in messages_copy:
+                client_messages.append({
+                    "id": msg["id"],
+                    "message": msg["message"]
+                })
+                
+            logger.info(f"Returning {len(client_messages)} replicated messages to client")
             
             return jsonify({
-                "messages": messages_copy
+                "messages": client_messages
             }), 200
             
         except Exception as e:
