@@ -10,6 +10,7 @@ import json
 import time
 import threading
 import requests
+import hashlib
 from datetime import datetime
 from flask import Flask, request, jsonify
 from typing import List, Dict
@@ -96,10 +97,15 @@ class MasterServer:
                 message_id = self.next_id
                 self.next_id += 1
             
+            # Compute hash for secondary compatibility (even though master doesn't use it for deduplication)
+            message_hash = hashlib.sha256(message_text.encode('utf-8')).hexdigest()
+            
             message_entry = {
                 "id": message_id,
+                "sequence": message_id,  # Include for secondary compatibility
                 "message": message_text,
-                "timestamp": timestamp
+                "timestamp": timestamp,
+                "hash": message_hash  # Include for secondary compatibility
             }
             
             logger.info(f"Received POST request with message: {message_text}, write concern: {write_concern}")
