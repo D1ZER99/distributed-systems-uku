@@ -194,55 +194,55 @@ class MasterServer:
             logger.error(f"Error registering secondary: {e}")
             return jsonify({"error": "Internal server error"}), 500
             
-    def replicate_to_secondaries(self, message_entry: Dict) -> bool:
-        """Replicate message to all secondary servers with blocking approach"""
-        if not self.secondaries:
-            logger.warning("No secondary servers to replicate to")
-            return True  # No secondaries means replication is "successful"
+    # def replicate_to_secondaries(self, message_entry: Dict) -> bool:
+    #     """Replicate message to all secondary servers with blocking approach"""
+    #     if not self.secondaries:
+    #         logger.warning("No secondary servers to replicate to")
+    #         return True  # No secondaries means replication is "successful"
             
-        logger.info(f"Starting replication to {len(self.secondaries)} secondaries")
+    #     logger.info(f"Starting replication to {len(self.secondaries)} secondaries")
         
-        # Use threading to send to all secondaries in parallel, but wait for all
-        success_count = 0
-        threads = []
-        results = {}
+    #     # Use threading to send to all secondaries in parallel, but wait for all
+    #     success_count = 0
+    #     threads = []
+    #     results = {}
         
-        def replicate_to_secondary(secondary_url: str):
-            try:
-                response = requests.post(
-                    f"{secondary_url}/replicate",
-                    json=message_entry,
-                    timeout=30  # 30 seconds timeout
-                )
+    #     def replicate_to_secondary(secondary_url: str):
+    #         try:
+    #             response = requests.post(
+    #                 f"{secondary_url}/replicate",
+    #                 json=message_entry,
+    #                 timeout=30  # 30 seconds timeout
+    #             )
                 
-                if response.status_code == 200:
-                    results[secondary_url] = True
-                    logger.info(f"Successfully replicated to {secondary_url}")
-                else:
-                    results[secondary_url] = False
-                    logger.error(f"Failed to replicate to {secondary_url}: {response.status_code}")
+    #             if response.status_code == 200:
+    #                 results[secondary_url] = True
+    #                 logger.info(f"Successfully replicated to {secondary_url}")
+    #             else:
+    #                 results[secondary_url] = False
+    #                 logger.error(f"Failed to replicate to {secondary_url}: {response.status_code}")
                     
-            except Exception as e:
-                results[secondary_url] = False
-                logger.error(f"Error replicating to {secondary_url}: {e}")
+    #         except Exception as e:
+    #             results[secondary_url] = False
+    #             logger.error(f"Error replicating to {secondary_url}: {e}")
                 
-        # Start replication threads
-        for secondary_url in self.secondaries:
-            thread = threading.Thread(target=replicate_to_secondary, args=(secondary_url,))
-            thread.start()
-            threads.append(thread)
+    #     # Start replication threads
+    #     for secondary_url in self.secondaries:
+    #         thread = threading.Thread(target=replicate_to_secondary, args=(secondary_url,))
+    #         thread.start()
+    #         threads.append(thread)
             
-        # Wait for all threads to complete
-        for thread in threads:
-            thread.join()
+    #     # Wait for all threads to complete
+    #     for thread in threads:
+    #         thread.join()
             
-        # Check results
-        success_count = sum(1 for success in results.values() if success)
+    #     # Check results
+    #     success_count = sum(1 for success in results.values() if success)
         
-        logger.info(f"Replication completed: {success_count}/{len(self.secondaries)} successful")
+    #     logger.info(f"Replication completed: {success_count}/{len(self.secondaries)} successful")
         
-        # Return True only if ALL secondaries acknowledged
-        return success_count == len(self.secondaries)
+    #     # Return True only if ALL secondaries acknowledged
+    #     return success_count == len(self.secondaries)
         
     def replicate_to_secondaries_with_concern(self, message_entry: Dict, acks_needed: int) -> int:
         """Replicate message to secondaries and return once enough ACKs received"""
