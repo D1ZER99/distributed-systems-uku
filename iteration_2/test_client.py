@@ -354,7 +354,7 @@ class ReplicatedLogClient:
         return master_msgs, s1_msgs, s2_msgs
     
     def acceptance_test(self):
-        """Run the professor's specific acceptance test with optimized timing
+        """Run the acceptance test with optimized timing
         
         Requirements:
         - Secondary-2 has 10-sec delay
@@ -393,7 +393,7 @@ class ReplicatedLogClient:
         test_start_time = datetime.now()
         print(f"🕐 Test started at: {test_start_time.strftime('%H:%M:%S')}")
         
-        # Send messages as specified by professor
+        # Send messages as specified
         messages_sent = []
         test_cases = [
             ("Msg1", 1),  # Should reach all immediately 
@@ -530,9 +530,9 @@ class ReplicatedLogClient:
         print(f"      Master:      {len(master_after)} messages: {[m['message'] for m in master_after]}")
         print(f"      Secondary-1: {len(s1_after)} messages: {[m['message'] for m in s1_after]}")
         print(f"      Secondary-2: {len(s2_after)} messages: {[m['message'] for m in s2_after]}")
-        
-        # Step 6: Validate expected results according to professor's requirements
-        print(f"\n✅ Validation against Professor's Requirements:")
+
+        # Step 6: Validate expected results according to requirements
+        print(f"\n✅ Validation against Requirements:")
         
         expected_all = ["Msg1", "Msg2", "Msg3", "Msg4"]
         expected_s2_during = ["Msg1", "Msg2", "Msg3"]  # Only first 3 during delay
