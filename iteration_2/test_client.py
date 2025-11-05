@@ -350,7 +350,7 @@ class ReplicatedLogClient:
         - Check during delay: M+S1 should have all 4, S2 should have only Msg1,2,3
         - Check after delay: All servers should have all 4 messages in correct order
         """
-        print("🧪 Professor's Self-Check Acceptance Test")
+        print("🧪 Self-Check Acceptance Test")
         print("=" * 60)
         print(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         print("📋 Test Requirements:")
@@ -396,9 +396,9 @@ class ReplicatedLogClient:
         total_duration = (all_sent_time - test_start_time).total_seconds()
         print(f"🕐 All messages sent by: {all_sent_time.strftime('%H:%M:%S')} (total: {total_duration:.2f}s)")
         
-        # Small delay to allow Msg4 to reach Secondary-1 (which has 2s delay)
-        print(f"\n⏱️ Waiting 3 seconds for Msg4 to reach Secondary-1...")
-        time.sleep(3)
+        # Small delay to allow Msg4 to reach Secondary-1 (which has 5s delay)
+        print(f"\n⏱️ Waiting 5 seconds for Msg4 to reach Secondary-1...")
+        time.sleep(5)
         
         # Step 3: Check state DURING the 10-second delay
         # We need to check quickly after Msg3 is sent but before S2 delay expires
