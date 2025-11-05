@@ -34,7 +34,7 @@ services:
       - SERVER_ID=secondary-1
       - SECONDARY_PORT=5001
       - SECONDARY_HOST=secondary-1
-      - REPLICATION_DELAY=2.0
+      - REPLICATION_DELAY=5.0
       - MASTER_URL=http://master:5000
       - DATA_DIR=/app/data
 
