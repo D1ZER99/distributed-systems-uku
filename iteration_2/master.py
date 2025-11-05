@@ -11,6 +11,7 @@ import time
 import threading
 import requests
 import hashlib
+import atexit
 from datetime import datetime
 from flask import Flask, request, jsonify
 from typing import List, Dict
@@ -41,11 +42,32 @@ class MasterServer:
         self.next_id = 1
         self.counter_lock = threading.Lock()
         
+        # Persistent ThreadPoolExecutor for replication
+        self.executor = None
+        
         # Setup routes
         self.setup_routes()
         
         # Load secondary servers from environment
         self.load_secondaries()
+        
+        # Initialize ThreadPoolExecutor after loading secondaries
+        self.init_executor()
+        
+        # Register shutdown handler
+        atexit.register(self.shutdown)
+        
+    def init_executor(self):
+        """Initialize ThreadPoolExecutor with appropriate number of workers"""
+        max_workers = max(len(self.secondaries), 1)  # At least 1 worker
+        self.executor = ThreadPoolExecutor(max_workers=max_workers)
+        logger.info(f"Initialized ThreadPoolExecutor with {max_workers} workers")
+        
+    def shutdown(self):
+        """Shutdown ThreadPoolExecutor gracefully"""
+        if self.executor:
+            logger.info("Shutting down ThreadPoolExecutor")
+            self.executor.shutdown(wait=False)
         
     def load_secondaries(self):
         """Load secondary server URLs from environment variables"""
@@ -116,45 +138,71 @@ class MasterServer:
             
             # Decrement write concern for master's write
             write_concern -= 1
+            logger.info(f"Message stored on master, remaining write concern: {write_concern}")
 
-            # ALWAYS replicate to secondaries regardless of write concern
-            if self.secondaries:
-                logger.info(f"Starting replication to all {len(self.secondaries)} secondaries")
-                success = self.replicate_to_secondaries_with_concern(message_entry, write_concern)
-            else:
-                # No secondaries to replicate to
-                success = (write_concern == 0)
-            
-            # Check if write concern already satisfied after master write
-            # if write_concern == 0:
-            #     logger.info(f"Message {message_entry['id']} satisfied write concern with master write only")
-            #     return jsonify({
-            #         "id": message_id,
-            #         "message": message_text
-            #     }), 201
-            
-            # Replicate to secondaries based on remaining write concern
-            success = self.replicate_to_secondaries_with_concern(message_entry, write_concern)
-            
-            # Return based on replication success
-            if success:
-                logger.info(f"Message {message_entry['id']} successfully replicated with required write concern")
+            # If write concern already satisfied, return immediately
+            if write_concern == 0:
+                logger.info(f"Write concern satisfied with master write only (w=1)")
+                # Still replicate to secondaries asynchronously for eventual consistency
+                if self.secondaries:
+                    self.replicate_async(message_entry)
                 return jsonify({
                     "id": message_id,
                     "message": message_text
                 }), 201
+
+            # Need more ACKs - replicate to secondaries synchronously
+            if self.secondaries:
+                logger.info(f"Starting replication to {len(self.secondaries)} secondaries, need {write_concern} more ACKs")
+                success = self.replicate_to_secondaries_with_concern(message_entry, write_concern)
+                
+                if success:
+                    logger.info(f"Message {message_entry['id']} successfully replicated with required write concern")
+                    return jsonify({
+                        "id": message_id,
+                        "message": message_text
+                    }), 201
+                else:
+                    logger.warning(f"Message {message_entry['id']} did not meet required write concern")
+                    return jsonify({
+                        "id": message_id,
+                        "message": message_text,
+                        "warning": "Required write concern not met"
+                    }), 202
             else:
-                # Not enough ACKs - still added to master but return different status
-                logger.warning(f"Message {message_entry['id']} did not meet required write concern")
+                # No secondaries available but write concern > 0
+                logger.warning(f"Message {message_entry['id']} did not meet required write concern (no secondaries)")
                 return jsonify({
                     "id": message_id,
                     "message": message_text,
                     "warning": "Required write concern not met"
-                }), 202  # Accepted but not fully replicated
+                }), 202
             
         except Exception as e:
             logger.error(f"Error handling POST request: {e}")
             return jsonify({"error": "Internal server error"}), 500
+    
+    def replicate_async(self, message_entry: Dict):
+        """Replicate message to all secondaries asynchronously (fire and forget)"""
+        def replicate_to_secondary(secondary_url: str):
+            try:
+                response = requests.post(
+                    f"{secondary_url}/replicate",
+                    json=message_entry,
+                    timeout=30
+                )
+                if response.status_code == 200:
+                    logger.info(f"Async replication successful to {secondary_url}")
+                else:
+                    logger.warning(f"Async replication failed to {secondary_url}: {response.status_code}")
+            except Exception as e:
+                logger.warning(f"Async replication error to {secondary_url}: {e}")
+        
+        # Submit async replication tasks
+        for secondary_url in self.secondaries:
+            self.executor.submit(replicate_to_secondary, secondary_url)
+        
+        logger.info(f"Started async replication to {len(self.secondaries)} secondaries")
             
     def handle_get_messages(self):
         """Handle GET requests to retrieve all messages"""
@@ -192,6 +240,11 @@ class MasterServer:
                 self.secondaries.append(secondary_url)
                 logger.info(f"Registered new secondary: {secondary_url}")
                 
+                # Reinitialize executor with new worker count
+                if self.executor:
+                    self.executor.shutdown(wait=False)
+                self.init_executor()
+                
             return jsonify({"status": "registered", "total_secondaries": len(self.secondaries)}), 200
             
         except Exception as e:
@@ -203,16 +256,14 @@ class MasterServer:
         """Replicate message to secondaries and return once enough ACKs received"""
         if not self.secondaries:
             logger.warning("No secondary servers to replicate to")
-            return write_concern == 0  # Return True if no more ACKs needed
+            return write_concern == 0
             
-        logger.info(f"Starting replication to {len(self.secondaries)} secondaries, need {write_concern} more ACKs")
-        
         def replicate_to_secondary(secondary_url: str) -> bool:
             try:
                 response = requests.post(
                     f"{secondary_url}/replicate",
                     json=message_entry,
-                    timeout=30  # 30 seconds timeout
+                    timeout=30
                 )
                 
                 if response.status_code == 200:
@@ -227,41 +278,39 @@ class MasterServer:
                 return False
         
         try:
-            with ThreadPoolExecutor(max_workers=len(self.secondaries)) as executor:
-                # Submit all replication tasks
-                futures = []
-                for secondary_url in self.secondaries:
-                    futures.append(executor.submit(replicate_to_secondary, secondary_url))
-                
-                # If write concern already satisfied, return immediately
-                if write_concern == 0:
-                    logger.info("Write concern already satisfied before secondary replication")
-                    return True
-                
-                # Monitor completion and check write concern
-                try:
-                    for future in as_completed(futures, timeout=30):
-                        success = future.result()
-                        if success:
-                            write_concern -= 1
-                            logger.info(f"ACK received, remaining write concern: {write_concern}")
-                            if write_concern == 0:
-                                logger.info("Write concern satisfied")
-                                return True
-                except Exception as e:
-                    logger.error(f"Error waiting for replication completion: {e}")
-                
-                logger.warning(f"Write concern not satisfied, still need {write_concern} more ACKs")
-                return False
+            # Submit all replication tasks
+            futures = []
+            for secondary_url in self.secondaries:
+                futures.append(self.executor.submit(replicate_to_secondary, secondary_url))
+            
+            # Monitor completion and check write concern
+            acks_received = 0
+            try:
+                for future in as_completed(futures, timeout=30):
+                    success = future.result()
+                    if success:
+                        acks_received += 1
+                        logger.info(f"ACK received ({acks_received}/{write_concern} needed)")
+                        if acks_received >= write_concern:
+                            logger.info("Write concern satisfied")
+                            return True
+            except Exception as e:
+                logger.error(f"Error waiting for replication completion: {e}")
+            
+            logger.warning(f"Write concern not satisfied, got {acks_received}/{write_concern} ACKs")
+            return False
                 
         except Exception as e:
-            logger.error(f"Error in ThreadPoolExecutor: {e}")
+            logger.error(f"Error in replication: {e}")
             return False
         
     def run(self, host='0.0.0.0', port=5000):
         """Run the master server"""
         logger.info(f"Starting Master server on {host}:{port} with threading enabled")
-        self.app.run(host=host, port=port, debug=False, threaded=True) # Enable threading for concurrent requests
+        try:
+            self.app.run(host=host, port=port, debug=False, threaded=True)
+        finally:
+            self.shutdown()
 
 if __name__ == "__main__":
     master = MasterServer()
