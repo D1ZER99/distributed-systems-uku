@@ -116,14 +116,22 @@ class MasterServer:
             
             # Decrement write concern for master's write
             write_concern -= 1
+
+            # ALWAYS replicate to secondaries regardless of write concern
+            if self.secondaries:
+                logger.info(f"Starting replication to all {len(self.secondaries)} secondaries")
+                success = self.replicate_to_secondaries_with_concern(message_entry, write_concern)
+            else:
+                # No secondaries to replicate to
+                success = (write_concern == 0)
             
             # Check if write concern already satisfied after master write
-            if write_concern == 0:
-                logger.info(f"Message {message_entry['id']} satisfied write concern with master write only")
-                return jsonify({
-                    "id": message_id,
-                    "message": message_text
-                }), 201
+            # if write_concern == 0:
+            #     logger.info(f"Message {message_entry['id']} satisfied write concern with master write only")
+            #     return jsonify({
+            #         "id": message_id,
+            #         "message": message_text
+            #     }), 201
             
             # Replicate to secondaries based on remaining write concern
             success = self.replicate_to_secondaries_with_concern(message_entry, write_concern)
