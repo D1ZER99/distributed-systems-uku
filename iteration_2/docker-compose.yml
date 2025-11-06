@@ -15,9 +15,6 @@ services:
     environment:
       - SECONDARIES=http://secondary-1:5001,http://secondary-2:5002
       - DATA-DIR=/app/data
-    depends_on:
-      - secondary-1
-      - secondary-2
 
   secondary-1:
     build:
@@ -30,6 +27,8 @@ services:
     networks:
       - replicated-log-network
     container_name: secondary-1
+    depends_on:
+      - master
     environment:
       - SERVER_ID=secondary-1
       - SECONDARY_PORT=5001
@@ -49,6 +48,8 @@ services:
     networks:
       - replicated-log-network
     container_name: secondary-2
+    depends_on:
+      - master
     environment:
       - SERVER_ID=secondary-2
       - SECONDARY_PORT=5002
