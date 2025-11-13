@@ -1,0 +1,77 @@
+version: '3.8'
+
+services:
+  master:
+    build:
+      context: .
+      dockerfile: Dockerfile.master
+    ports:
+      - "5000:5000"
+    networks:
+      - replicated-log-network
+    volumes:
+      - master-data:/app/data
+    container_name: master
+    environment:
+      - SECONDARIES=http://secondary-1:5001,http://secondary-2:5002
+      - DATA-DIR=/app/data
+      # Iteration 3 retry configuration
+      - MAX_RETRY_ATTEMPTS=-1
+      - INITIAL_RETRY_DELAY=1.0
+      - MAX_RETRY_DELAY=30.0
+      - REPLICATION_TIMEOUT=15.0
+
+  secondary-1:
+    build:
+      context: .
+      dockerfile: Dockerfile.secondary
+    ports:
+      - "5001:5001"
+    volumes:
+      - secondary1-data:/app/data
+    networks:
+      - replicated-log-network
+    container_name: secondary-1
+    depends_on:
+      - master
+    environment:
+      - SERVER_ID=secondary-1
+      - SECONDARY_PORT=5001
+      - SECONDARY_HOST=secondary-1
+      - REPLICATION_DELAY=3.0
+      - MASTER_URL=http://master:5000
+      - DATA_DIR=/app/data
+      # Iteration 3 testing configuration
+      - ERROR_RATE=0.15
+
+  secondary-2:
+    build:
+      context: .
+      dockerfile: Dockerfile.secondary
+    ports:
+      - "5002:5002"
+    volumes:
+      - secondary2-data:/app/data
+    networks:
+      - replicated-log-network
+    container_name: secondary-2
+    depends_on:
+      - master
+    environment:
+      - SERVER_ID=secondary-2
+      - SECONDARY_PORT=5002
+      - SECONDARY_HOST=secondary-2
+      - REPLICATION_DELAY=5.0
+      - MASTER_URL=http://master:5000
+      - DATA_DIR=/app/data
+      # Iteration 3 testing configuration
+      - ERROR_RATE=0.20
+
+volumes:
+  master-data:
+  secondary1-data:
+  secondary2-data:
+
+networks:
+  replicated-log-network:
+    driver: bridge
