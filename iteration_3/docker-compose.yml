@@ -15,11 +15,6 @@ services:
     environment:
       - SECONDARIES=http://secondary-1:5001,http://secondary-2:5002
       - DATA-DIR=/app/data
-      # Iteration 3 retry configuration
-      - MAX_RETRY_ATTEMPTS=-1
-      - INITIAL_RETRY_DELAY=1.0
-      - MAX_RETRY_DELAY=30.0
-      - REPLICATION_TIMEOUT=15.0
 
   secondary-1:
     build:
@@ -38,11 +33,9 @@ services:
       - SERVER_ID=secondary-1
       - SECONDARY_PORT=5001
       - SECONDARY_HOST=secondary-1
-      - REPLICATION_DELAY=3.0
+      - REPLICATION_DELAY=5.0
       - MASTER_URL=http://master:5000
       - DATA_DIR=/app/data
-      # Iteration 3 testing configuration
-      - ERROR_RATE=0.15
 
   secondary-2:
     build:
@@ -61,11 +54,9 @@ services:
       - SERVER_ID=secondary-2
       - SECONDARY_PORT=5002
       - SECONDARY_HOST=secondary-2
-      - REPLICATION_DELAY=5.0
+      - REPLICATION_DELAY=10.0
       - MASTER_URL=http://master:5000
       - DATA_DIR=/app/data
-      # Iteration 3 testing configuration
-      - ERROR_RATE=0.20
 
 volumes:
   master-data:

@@ -1,67 +1,40 @@
-# Replicated Log System (Iteration 3)
+# Replicated Log System (Iteration 2)
 
-This is a replicated log system with **retry mechanism** and **missed message replication** for tunable semi-synchronous replication with **exactly-once delivery** in **total order**.
+This is a replicated log system with one Master and multiple Secondary servers, implementing **tunable write concern** for semi-synchronous replication.
 
 ## Architecture
 
 ```
 Client --> Master --> Secondary-1
             |
-            --> Secondary-2 (with retry & catch-up)
+            --> Secondary-2
 ```
 
-- **Master**: Handles POST/GET requests with unlimited retry mechanism for failed deliveries
-- **Secondaries**: Strict total order enforcement and automatic catch-up replication
-- **Write Concern**: Blocks until required replicas acknowledge with retry mechanism
-- **Exactly-once**: Deduplication ensures messages appear exactly once despite retries
-- **Total Order**: Messages processed in strict sequence order across all nodes
+- **Master**: Handles POST/GET requests, replicates to secondaries with configurable write concern
+- **Secondaries**: Handle replication requests from master and serve GET requests with configurable delay
+- **Write Concern**: Client specifies how many replicas (w=1,2,3,..,n) must acknowledge before POST completes
+- **Semi-Synchronous**: Allows tunable consistency vs. performance trade-offs
 
-## Key Features - Iteration 3
+## Key Features - Iteration 2
 
-### 🔄 **Retry Mechanism**
-- **Unlimited retries** for failed deliveries (configurable)
-- **Exponential backoff** with jitter for smart delay logic
-- **Configurable timeout** per replication attempt
-- **Background retries** continue for remaining secondaries after write concern satisfied
+- **Tunable Write Concern (w parameter)**: Client controls how many replicas must acknowledge (*regardless of write concern value chosen messages will be replicated to all the nodes*):
+  - `w=1`: Master only (fastest, lowest consistency)
+  - `w=2`: Master + 1 secondary (balanced)
+  - `w=3`: Master + all secondaries (highest consistency, slower)
+- **Partial Success Handling**: Different HTTP status codes based on replication success
+- **Flexible Consistency**: Supports both fast writes and strong consistency depending on use case
+- **Backward Compatibility**: Default write concern ensures full replication like iteration 1
 
-### 🚧 **Blocking Write Concern**
-- **Client blocks** until write concern level is met
-- **Parallel clients** are never blocked by each other
-- **Auto-retry** when secondaries become available
-- **Graceful handling** of unavailable nodes
+## Features
 
-### 📦 **Missed Message Replication**
-- **Automatic catch-up** when secondaries rejoin
-- **State tracking** for last replicated sequence per secondary
-- **Background sync** without blocking new operations
-- **Complete history** replay for rejoining nodes
-
-### 🎯 **Enhanced Guarantees**
-- **Exactly-once delivery**: Hash-based deduplication prevents duplicates
-- **Total order**: Strict sequence enforcement - messages wait for gaps
-- **Error testing**: Random errors after processing to test retry mechanism
-- **Semi-synchronous**: Tunable consistency with retry guarantees
-
-## Configuration
-
-### Environment Variables
-
-#### Master Server
-```bash
-MAX_RETRY_ATTEMPTS=-1          # -1 = unlimited retries
-INITIAL_RETRY_DELAY=1.0        # Base delay for exponential backoff
-MAX_RETRY_DELAY=60.0           # Maximum delay cap
-REPLICATION_TIMEOUT=30.0       # Per-attempt timeout
-SECONDARIES=http://secondary-1:5001,http://secondary-2:5002
-```
-
-#### Secondary Server  
-```bash
-SERVER_ID=secondary-1          # Unique identifier
-REPLICATION_DELAY=2.0          # Artificial delay for testing
-ERROR_RATE=0.1                 # 10% random errors for retry testing
-MASTER_URL=http://master:5000  # Auto-registration URL
-```
+- **HTTP REST API** with write concern parameter
+- **Tunable replication** - Client specifies required acknowledgment count
+- **Parallel replication** - Master contacts all secondaries simultaneously using threading
+- **Configurable delays** on secondaries to test different consistency scenarios
+- **Comprehensive logging** across all components
+- **Docker containerization** for easy deployment
+- **Health checks** and monitoring endpoints
+- **Message deduplication** and total ordering guarantees
 
 ## API Endpoints
 

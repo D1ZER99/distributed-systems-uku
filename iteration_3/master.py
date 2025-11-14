@@ -1,23 +1,21 @@
 #!/usr/bin/env python3
 """
-Master Server - Iteration 3
-A master server for the replicated log system with retry mechanism,
-missed message replication, and tunable semi-synchronous replication.
+Master Server - Iteration 1
+A master server for the replicated log system that handles POST/GET requests
+and replicates messages to secondary servers with blocking replication.
 """
 
 import logging
-import json
 import time
 import threading
 import requests
 import hashlib
 import atexit
-import random
 from datetime import datetime
 from flask import Flask, request, jsonify
-from typing import List, Dict, Set, Optional
-from concurrent.futures import ThreadPoolExecutor, as_completed, Future
+from typing import List, Dict
 import os
+from queue import Queue
 
 # Configure logging
 logging.basicConfig(
@@ -31,62 +29,170 @@ logging.basicConfig(
 
 logger = logging.getLogger('Master')
 
+
+class SecondaryReplicationWorker:
+    """Background worker that guarantees ordered delivery with retries."""
+
+    def __init__(
+        self,
+        secondary_url: str,
+        request_timeout: float,
+        ack_callback,
+        initial_retry_delay: float,
+        max_retry_delay: float,
+    ):
+        self.secondary_url = secondary_url
+        self.request_timeout = request_timeout
+        self.ack_callback = ack_callback
+        self.initial_retry_delay = max(initial_retry_delay, 0.1)
+        self.max_retry_delay = max(max_retry_delay, self.initial_retry_delay)
+
+        self.queue: Queue = Queue()
+        self.stop_event = threading.Event()
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.session = requests.Session()
+        self.thread.start()
+
+    def enqueue_message(self, message_entry: Dict):
+        """Add message to the per-secondary queue preserving order."""
+        self.queue.put(message_entry)
+
+    def stop(self):
+        """Stop worker gracefully."""
+        self.stop_event.set()
+        self.queue.put(None)
+        self.thread.join(timeout=5)
+
+    def _run(self):
+        while not self.stop_event.is_set():
+            message_entry = self.queue.get()
+            if message_entry is None:
+                break
+            try:
+                self._deliver_with_retry(message_entry)
+            finally:
+                self.queue.task_done()
+
+    def _deliver_with_retry(self, message_entry: Dict):
+        delay = self.initial_retry_delay
+        while not self.stop_event.is_set():
+            try:
+                response = self.session.post(
+                    f"{self.secondary_url}/replicate",
+                    json=message_entry,
+                    timeout=self.request_timeout,
+                )
+                if response.status_code == 200:
+                    logger.info(
+                        "Replication to %s succeeded for message %s",
+                        self.secondary_url,
+                        message_entry["id"],
+                    )
+                    self.ack_callback(self.secondary_url, message_entry["id"])
+                    return
+                else:
+                    logger.error(
+                        "Secondary %s responded with %s for message %s",
+                        self.secondary_url,
+                        response.status_code,
+                        message_entry["id"],
+                    )
+            except Exception as exc:
+                logger.error(
+                    "Error replicating to %s for message %s: %s",
+                    self.secondary_url,
+                    message_entry["id"],
+                    exc,
+                )
+
+            logger.info(
+                "Scheduling retry for secondary %s in %.2fs",
+                self.secondary_url,
+                delay,
+            )
+            if self.stop_event.wait(delay):
+                return
+            delay = min(delay * 2, self.max_retry_delay)
+
 class MasterServer:
     def __init__(self):
-        print("MASTER SERVER V3 - WITH RETRY MECHANISM")  # Debug marker
+        print("MASTER SERVER V2 - NO DEDUPLICATION")  # Debug marker
         self.app = Flask(__name__)
         self.messages: List[Dict] = []
         self.secondaries: List[str] = []
         self.message_lock = threading.Lock()
+        self.secondary_lock = threading.Lock()
         
         # Separate ID counter with its own lock
         self.next_id = 1
         self.counter_lock = threading.Lock()
         
-        # Persistent ThreadPoolExecutor for replication
-        self.executor = ThreadPoolExecutor()
+        # Ack tracking for tunable semi-synchronous replication
+        self.message_ack_tracker: Dict[int, set] = {}
+        self.ack_condition = threading.Condition()
+        self.replication_managers: Dict[str, SecondaryReplicationWorker] = {}
         
-        # Secondary state tracking for missed message replication
-        self.secondary_states: Dict[str, Dict] = {}  # {url: {"last_sequence": int, "available": bool}}
-        self.state_lock = threading.Lock()
-        
-        # Retry configuration
-        self.max_retry_attempts = int(os.environ.get('MAX_RETRY_ATTEMPTS', '-1'))  # -1 = unlimited
-        self.initial_retry_delay = float(os.environ.get('INITIAL_RETRY_DELAY', '1.0'))
-        self.max_retry_delay = float(os.environ.get('MAX_RETRY_DELAY', '60.0'))
-        self.replication_timeout = float(os.environ.get('REPLICATION_TIMEOUT', '30.0'))
+        # Tunable retry/backoff controls
+        self.initial_retry_delay = float(os.environ.get('RETRY_DELAY_INITIAL', '1.0'))
+        self.max_retry_delay = float(os.environ.get('RETRY_DELAY_MAX', '10.0'))
+        self.secondary_request_timeout = float(os.environ.get('SECONDARY_REQUEST_TIMEOUT', '10.0'))
+        self.write_concern_timeout = float(os.environ.get('WRITE_CONCERN_TIMEOUT_SECONDS', '0'))
         
         # Setup routes
         self.setup_routes()
         
         # Load secondary servers from environment
         self.load_secondaries()
+        self.initialize_replication_managers()
         
         # Register shutdown handler
         atexit.register(self.shutdown)
         
     def shutdown(self):
-        """Shutdown ThreadPoolExecutor gracefully"""
-        if self.executor:
-            logger.info("Shutting down ThreadPoolExecutor")
-            self.executor.shutdown()
+        """Shutdown replication managers gracefully"""
+        logger.info("Shutting down replication managers")
+        for manager in list(self.replication_managers.values()):
+            try:
+                manager.stop()
+            except Exception as exc:
+                logger.error(f"Error shutting down manager for {manager.secondary_url}: {exc}")
         
     def load_secondaries(self):
         """Load secondary server URLs from environment variables"""
         secondaries_env = os.environ.get('SECONDARIES', '')
         if secondaries_env:
             self.secondaries = [url.strip() for url in secondaries_env.split(',') if url.strip()]
-            # Initialize secondary states
-            with self.state_lock:
-                for secondary_url in self.secondaries:
-                    self.secondary_states[secondary_url] = {
-                        "last_sequence": 0,
-                        "available": True,
-                        "last_seen": datetime.now().isoformat()
-                    }
             logger.info(f"Loaded {len(self.secondaries)} secondary servers: {self.secondaries}")
         else:
             logger.warning("No secondary servers configured")
+
+    def initialize_replication_managers(self):
+        """Start replication managers for all known secondaries."""
+        with self.secondary_lock:
+            for secondary_url in self.secondaries:
+                self._ensure_replication_manager(secondary_url)
+
+    def _ensure_replication_manager(self, secondary_url: str):
+        """Create a replication manager for the given secondary if missing."""
+        if secondary_url in self.replication_managers:
+            return
+
+        manager = SecondaryReplicationWorker(
+            secondary_url=secondary_url,
+            request_timeout=self.secondary_request_timeout,
+            ack_callback=self.handle_secondary_ack,
+            initial_retry_delay=self.initial_retry_delay,
+            max_retry_delay=self.max_retry_delay,
+        )
+
+        with self.message_lock:
+            backlog = list(self.messages)
+
+        for message in backlog:
+            manager.enqueue_message(message)
+
+        self.replication_managers[secondary_url] = manager
+        logger.info(f"Started replication manager for {secondary_url} with backlog of {len(backlog)} messages")
             
     def setup_routes(self):
         """Setup Flask routes"""
@@ -106,10 +212,6 @@ class MasterServer:
         @self.app.route('/secondaries', methods=['POST'])
         def register_secondary():
             return self.handle_register_secondary()
-            
-        @self.app.route('/sync/<path:secondary_url>', methods=['POST'])
-        def sync_secondary(secondary_url):
-            return self.handle_secondary_sync(secondary_url)
             
     def handle_post_message(self):
         """Handle POST requests to append messages with write concern"""
@@ -155,30 +257,34 @@ class MasterServer:
             logger.info(f"Message stored on master, remaining write concern: {write_concern}")
 
             # Need more ACKs - replicate to secondaries synchronously
-            if self.secondaries:
-                logger.info(f"Starting replication to {len(self.secondaries)} secondaries, need {write_concern} more ACKs")
-                success = self.replicate_to_secondaries_with_concern(message_entry, write_concern)
-                
-                if success:
-                    logger.info(f"Message {message_entry['id']} successfully replicated with required write concern")
-                    return jsonify({
-                        "id": message_id,
-                        "message": message_text
-                    }), 201
-                else:
-                    logger.warning(f"Message {message_entry['id']} did not meet required write concern")
-                    return jsonify({
-                        "id": message_id,
-                        "message": message_text,
-                        "warning": "Required write concern not met"
-                    }), 202
+            self.replicate_to_all_secondaries(message_entry)
+
+            if write_concern <= 0:
+                logger.info("Write concern satisfied by master only (w=1)")
+                return jsonify({
+                    "id": message_id,
+                    "message": message_text
+                }), 201
+
+            # Track ACKs for this message
+            self.initialize_ack_tracking(message_id)
+
+            wait_timeout = self._get_wait_timeout(data)
+            success = self.wait_for_write_concern(message_id, write_concern, wait_timeout)
+            self.cleanup_ack_tracking(message_id)
+
+            if success:
+                logger.info(f"Message {message_entry['id']} successfully replicated with required write concern")
+                return jsonify({
+                    "id": message_id,
+                    "message": message_text
+                }), 201
             else:
-                # No secondaries available but write concern > 0
-                logger.warning(f"Message {message_entry['id']} did not meet required write concern (no secondaries)")
+                logger.warning(f"Message {message_entry['id']} did not meet required write concern before timeout")
                 return jsonify({
                     "id": message_id,
                     "message": message_text,
-                    "warning": "Required write concern not met"
+                    "warning": "Required write concern not met before timeout"
                 }), 202
             
         except Exception as e:
@@ -217,235 +323,97 @@ class MasterServer:
                 return jsonify({"error": "URL is required"}), 400
                 
             secondary_url = data['url']
-            if secondary_url not in self.secondaries:
-                self.secondaries.append(secondary_url)
-                
-            # Initialize or update secondary state
-            with self.state_lock:
-                if secondary_url not in self.secondary_states:
-                    self.secondary_states[secondary_url] = {
-                        "last_sequence": 0,
-                        "available": True,
-                        "last_seen": datetime.now().isoformat()
-                    }
+            with self.secondary_lock:
+                if secondary_url not in self.secondaries:
+                    self.secondaries.append(secondary_url)
+                    logger.info(f"Registered new secondary: {secondary_url}")
+                    self._ensure_replication_manager(secondary_url)
                 else:
-                    self.secondary_states[secondary_url]["available"] = True
-                    self.secondary_states[secondary_url]["last_seen"] = datetime.now().isoformat()
-                    
-            logger.info(f"Registered secondary: {secondary_url}")
-                
-            # Trigger catch-up replication for rejoining secondary
-            self.trigger_catch_up_replication(secondary_url)
+                    logger.info(f"Secondary {secondary_url} already registered")
                 
             return jsonify({"status": "registered", "total_secondaries": len(self.secondaries)}), 200
             
         except Exception as e:
             logger.error(f"Error registering secondary: {e}")
             return jsonify({"error": "Internal server error"}), 500
-            
-        
-    def handle_secondary_sync(self, secondary_url: str):
-        """Handle secondary synchronization requests"""
-        try:
-            # Decode URL if needed
-            secondary_url = secondary_url.replace('%3A', ':').replace('%2F', '/')
-            
-            data = request.get_json()
-            last_sequence = data.get('last_sequence', 0) if data else 0
-            
-            # Find missed messages
-            missed_messages = []
-            with self.message_lock:
-                for msg in self.messages:
-                    if msg['sequence'] > last_sequence:
-                        missed_messages.append(msg)
-                        
-            logger.info(f"Sending {len(missed_messages)} missed messages to {secondary_url}")
-            
-            return jsonify({
-                "status": "sync_ready",
-                "missed_messages": missed_messages,
-                "total_messages": len(self.messages)
-            }), 200
-            
-        except Exception as e:
-            logger.error(f"Error handling secondary sync: {e}")
-            return jsonify({"error": "Internal server error"}), 500
+    
+    def replicate_to_all_secondaries(self, message_entry: Dict):
+        """Fan-out message to every secondary regardless of write concern."""
+        with self.secondary_lock:
+            managers = list(self.replication_managers.values())
 
-    def trigger_catch_up_replication(self, secondary_url: str):
-        """Trigger catch-up replication for a rejoining secondary in background"""
-        def do_catch_up():
+        if not managers:
+            logger.info("No replication managers available; nothing to fan-out")
+            return
+
+        for manager in managers:
+            manager.enqueue_message(message_entry)
+        logger.info(f"Queued message {message_entry['id']} for replication to {len(managers)} secondaries")
+
+    def initialize_ack_tracking(self, message_id: int):
+        """Prepare tracking structure for a new message awaiting ACKs."""
+        with self.ack_condition:
+            self.message_ack_tracker[message_id] = set()
+
+    def cleanup_ack_tracking(self, message_id: int):
+        """Remove tracking once all waiters are done."""
+        with self.ack_condition:
+            self.message_ack_tracker.pop(message_id, None)
+
+    def _get_wait_timeout(self, request_payload: Dict) -> float:
+        """Determine wait timeout from payload or global config."""
+        client_timeout_ms = request_payload.get('timeout_ms')
+        if client_timeout_ms is not None:
             try:
-                # Get secondary's last sequence number
-                with self.state_lock:
-                    last_sequence = self.secondary_states.get(secondary_url, {}).get('last_sequence', 0)
-                
-                # Find missed messages
-                missed_messages = []
-                with self.message_lock:
-                    for msg in self.messages:
-                        if msg['sequence'] > last_sequence:
-                            missed_messages.append(msg)
-                
-                if not missed_messages:
-                    logger.info(f"No missed messages for {secondary_url}")
-                    return
-                    
-                logger.info(f"Replicating {len(missed_messages)} missed messages to {secondary_url}")
-                
-                # Replicate missed messages one by one with retry
-                for msg in missed_messages:
-                    success = self.replicate_single_message_with_retry(secondary_url, msg, max_attempts=5)
-                    if success:
-                        with self.state_lock:
-                            if secondary_url in self.secondary_states:
-                                self.secondary_states[secondary_url]['last_sequence'] = msg['sequence']
-                    else:
-                        logger.error(f"Failed to replicate missed message {msg['id']} to {secondary_url}")
-                        break
-                        
-            except Exception as e:
-                logger.error(f"Error in catch-up replication for {secondary_url}: {e}")
-        
-        # Run in background
-        threading.Thread(target=do_catch_up, daemon=True).start()
+                client_timeout = max(float(client_timeout_ms) / 1000.0, 0.0)
+                return client_timeout if client_timeout > 0 else None
+            except (TypeError, ValueError):
+                logger.warning("Invalid timeout_ms value provided; ignoring")
 
-    def calculate_retry_delay(self, attempt: int) -> float:
-        """Calculate exponential backoff delay with jitter"""
-        if attempt <= 0:
-            return 0
-        
-        # Exponential backoff: base_delay * (2 ^ (attempt - 1))
-        delay = self.initial_retry_delay * (2 ** (attempt - 1))
-        
-        # Cap at max delay
-        delay = min(delay, self.max_retry_delay)
-        
-        # Add jitter (±20%)
-        jitter = delay * 0.2 * (random.random() - 0.5)
-        delay += jitter
-        
-        return max(0, delay)
+        if self.write_concern_timeout > 0:
+            return self.write_concern_timeout
+        return None
 
-    def replicate_single_message_with_retry(self, secondary_url: str, message_entry: Dict, 
-                                           max_attempts: Optional[int] = None) -> bool:
-        """Replicate a single message to a secondary with retry mechanism"""
-        if max_attempts is None:
-            max_attempts = self.max_retry_attempts
-            
-        attempt = 0
-        
-        while max_attempts < 0 or attempt < max_attempts:
-            attempt += 1
-            
-            try:
-                response = requests.post(
-                    f"{secondary_url}/replicate",
-                    json=message_entry,
-                    timeout=self.replication_timeout
-                )
-                
-                if response.status_code == 200:
-                    # Update secondary state
-                    with self.state_lock:
-                        if secondary_url in self.secondary_states:
-                            self.secondary_states[secondary_url]['available'] = True
-                            self.secondary_states[secondary_url]['last_sequence'] = message_entry['sequence']
-                            self.secondary_states[secondary_url]['last_seen'] = datetime.now().isoformat()
-                    
-                    logger.info(f"Successfully replicated message {message_entry['id']} to {secondary_url} on attempt {attempt}")
-                    return True
-                else:
-                    logger.warning(f"Failed to replicate to {secondary_url} on attempt {attempt}: HTTP {response.status_code}")
-                    
-            except Exception as e:
-                logger.warning(f"Error replicating to {secondary_url} on attempt {attempt}: {e}")
-                
-                # Mark as unavailable on connection errors
-                with self.state_lock:
-                    if secondary_url in self.secondary_states:
-                        self.secondary_states[secondary_url]['available'] = False
-            
-            # Calculate and wait for retry delay (except on last attempt)
-            if max_attempts < 0 or attempt < max_attempts:
-                delay = self.calculate_retry_delay(attempt)
-                if delay > 0:
-                    logger.info(f"Retrying {secondary_url} in {delay:.2f}s (attempt {attempt})")
-                    time.sleep(delay)
-        
-        logger.error(f"Failed to replicate message {message_entry['id']} to {secondary_url} after {attempt} attempts")
-        return False
-
-    def replicate_to_secondaries_with_concern(self, message_entry: Dict, write_concern: int) -> bool:
-        """Enhanced replication with retry mechanism and blocking until write concern is met"""
-        if write_concern == 0:
+    def wait_for_write_concern(self, message_id: int, required_acks: int, timeout: float = None) -> bool:
+        """Block until required ACKs received or timeout expires."""
+        if required_acks <= 0:
             return True
-        
-        if not self.secondaries:
-            logger.warning("No secondaries available for replication")
-            return False
-        
-        logger.info(f"Starting replication with write concern {write_concern}, available secondaries: {len(self.secondaries)}")
-        
-        # Track replication futures and their status
-        futures_to_secondary: Dict[Future, str] = {}
-        successful_replications = 0
-        
-        # Start replication to all secondaries with retry
-        for secondary_url in self.secondaries:
-            future = self.executor.submit(
-                self.replicate_single_message_with_retry, 
-                secondary_url, 
-                message_entry,
-                max_attempts=self.max_retry_attempts if self.max_retry_attempts > 0 else 10  # Limit for initial replication
+
+        deadline = time.time() + timeout if timeout else None
+
+        with self.ack_condition:
+            while True:
+                acked = len(self.message_ack_tracker.get(message_id, set()))
+                if acked >= required_acks:
+                    return True
+
+                if deadline is not None:
+                    remaining = deadline - time.time()
+                    if remaining <= 0:
+                        return False
+                    self.ack_condition.wait(timeout=remaining)
+                else:
+                    self.ack_condition.wait()
+
+    def handle_secondary_ack(self, secondary_url: str, message_id: int):
+        """Record acknowledgements coming from replication workers."""
+        with self.ack_condition:
+            acked_set = self.message_ack_tracker.get(message_id)
+            if acked_set is None:
+                return
+
+            if secondary_url in acked_set:
+                return
+
+            acked_set.add(secondary_url)
+            logger.info(
+                "ACK recorded for message %s from %s (%s/%s)",
+                message_id,
+                secondary_url,
+                len(acked_set),
+                len(self.replication_managers),
             )
-            futures_to_secondary[future] = secondary_url
-        
-        # Wait for write concern to be satisfied
-        try:
-            # Use a longer timeout for retry mechanism
-            timeout = self.replication_timeout * 3  # Allow more time for retries
-            
-            for future in as_completed(futures_to_secondary, timeout=timeout):
-                secondary_url = futures_to_secondary[future]
-                try:
-                    success = future.result()
-                    if success:
-                        successful_replications += 1
-                        logger.info(f"ACK received from {secondary_url} ({successful_replications}/{write_concern} needed)")
-                        
-                        if successful_replications >= write_concern:
-                            logger.info("Write concern satisfied")
-                            return True
-                except Exception as e:
-                    logger.error(f"Future error for {secondary_url}: {e}")
-                    
-        except Exception as e:
-            logger.error(f"Error waiting for replication completion: {e}")
-        
-        # If write concern not met, continue retrying in background for remaining secondaries
-        if successful_replications < write_concern:
-            remaining_futures = [f for f in futures_to_secondary.keys() if not f.done()]
-            if remaining_futures:
-                logger.info(f"Continuing retries for {len(remaining_futures)} secondaries in background")
-                
-                def background_retry():
-                    for future in remaining_futures:
-                        secondary_url = futures_to_secondary[future]
-                        try:
-                            # Continue retrying with unlimited attempts
-                            self.replicate_single_message_with_retry(
-                                secondary_url, 
-                                message_entry, 
-                                max_attempts=-1  # Unlimited retries in background
-                            )
-                        except Exception as e:
-                            logger.error(f"Background retry error for {secondary_url}: {e}")
-                
-                threading.Thread(target=background_retry, daemon=True).start()
-        
-        logger.warning(f"Write concern not satisfied immediately, got {successful_replications}/{write_concern} ACKs")
-        return successful_replications >= write_concern
+            self.ack_condition.notify_all()
         
     def run(self, host='0.0.0.0', port=5000):
         """Run the master server"""

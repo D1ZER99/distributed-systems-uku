@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Secondary Server - Iteration 3
-A secondary server with enhanced total order enforcement,
-sync mechanism, and retry testing features.
+Secondary Server - Iteration 1
+A secondary server for the replicated log system that receives replicated messages
+from the master and serves GET requests with intentional delay for testing.
 """
 
 import logging
@@ -10,7 +10,6 @@ import json
 import time
 import threading
 import hashlib
-import random
 from datetime import datetime
 from flask import Flask, request, jsonify
 from typing import List, Dict, Set
@@ -42,14 +41,6 @@ class SecondaryServer:
         self.message_hashes: Set[str] = set()
         self.dedup_lock = threading.Lock()
         
-        # Total order enforcement - pending messages waiting for sequence
-        self.pending_messages: Dict[int, Dict] = {}  # {sequence: message}
-        self.next_expected_sequence = 1
-        self.order_lock = threading.Lock()
-        
-        # Test error generation
-        self.error_rate = float(os.environ.get('ERROR_RATE', '0.1'))  # 10% chance of random errors
-        
         # Setup routes
         self.setup_routes()
         
@@ -58,15 +49,11 @@ class SecondaryServer:
         
         @self.app.route('/health', methods=['GET'])
         def health():
-            with self.message_lock:
-                last_sequence = self.messages[-1]['sequence'] if self.messages else 0
             return jsonify({
                 "status": "healthy", 
                 "role": "secondary",
                 "server_id": self.server_id,
-                "message_count": len(self.messages),
-                "last_sequence": last_sequence,
-                "next_expected": self.next_expected_sequence
+                "message_count": len(self.messages)
             }), 200
             
         @self.app.route('/messages', methods=['GET'])
@@ -76,10 +63,6 @@ class SecondaryServer:
         @self.app.route('/replicate', methods=['POST'])
         def replicate_message():
             return self.handle_replication()
-            
-        @self.app.route('/sync', methods=['POST'])
-        def sync_with_master():
-            return self.handle_sync_request()
             
     def handle_get_messages(self):
         """Handle GET requests to retrieve all replicated messages"""
@@ -116,75 +99,28 @@ class SecondaryServer:
             logger.info(f"New message: added hash {message_hash[:8]}..., total: {len(self.message_hashes)}")
             return False
             
-    def handle_sync_request(self):
-        """Handle sync requests from master for missed message replication"""
-        try:
-            data = request.get_json()
-            last_sequence = data.get('last_sequence', 0) if data else 0
-            
-            with self.message_lock:
-                current_last = self.messages[-1]['sequence'] if self.messages else 0
-                
-            return jsonify({
-                "status": "sync_info",
-                "server_id": self.server_id,
-                "last_sequence": current_last,
-                "ready_for_sync": True
-            }), 200
-            
-        except Exception as e:
-            logger.error(f"Error handling sync request: {e}")
-            return jsonify({"error": "Sync failed"}), 500
-            
-    def process_pending_messages(self):
-        """Process pending messages that can now be added in sequence"""
-        with self.order_lock:
-            while self.next_expected_sequence in self.pending_messages:
-                message_entry = self.pending_messages.pop(self.next_expected_sequence)
-                
-                # Add to main messages list
-                with self.message_lock:
-                    self.messages.append(message_entry)
-                    
-                logger.info(f"Processed pending message {message_entry['id']} with sequence {self.next_expected_sequence}")
-                self.next_expected_sequence += 1
-                
-            # Log current state
-            if self.pending_messages:
-                pending_sequences = sorted(self.pending_messages.keys())
-                logger.info(f"Still waiting for sequence {self.next_expected_sequence}, have pending: {pending_sequences}")
-            
-    def insert_in_total_order(self, message_entry: Dict):
-        """Insert message enforcing strict total order - messages must arrive in sequence"""
+    def insert_in_sequence_order(self, message_entry: Dict):
+        """Insert message maintaining sequence order"""
         sequence = message_entry['sequence']
         
-        with self.order_lock:
-            if sequence == self.next_expected_sequence:
-                # This is the next expected message, add it immediately
-                with self.message_lock:
-                    self.messages.append(message_entry)
-                
-                logger.info(f"Added message {message_entry['id']} with sequence {sequence} in order")
-                self.next_expected_sequence += 1
-                
-                # Process any pending messages that can now be added
-                self.process_pending_messages()
-                
-            elif sequence > self.next_expected_sequence:
-                # Future message, store in pending
-                self.pending_messages[sequence] = message_entry
-                logger.info(f"Message {message_entry['id']} with sequence {sequence} is out of order (expecting {self.next_expected_sequence}), storing as pending")
-                
-            else:
-                # Past message, this shouldn't happen with proper deduplication
-                logger.warning(f"Message {message_entry['id']} with sequence {sequence} is from the past (expecting {self.next_expected_sequence}), ignoring")    
+        # Find correct position to insert based on sequence number
+        insert_pos = 0
+        for i, existing_msg in enumerate(self.messages):
+            if existing_msg['sequence'] > sequence:
+                break
+            insert_pos = i + 1
+        
+        # Insert at correct position
+        self.messages.insert(insert_pos, message_entry)
+        logger.info(f"Inserted message {message_entry['id']} at position {insert_pos} based on sequence {sequence}")
+        
+        # Log current message order for debugging
+        sequences = [msg['sequence'] for msg in self.messages]
+        logger.debug(f"Current message sequence order: {sequences}")    
             
     def handle_replication(self):
-        """Handle replication requests from master with enhanced error testing"""
+        """Handle replication requests from master"""
         try:
-            # Generate random errors for testing retry mechanism (after message is processed)
-            will_error_after = random.random() < self.error_rate
-            
             # Introduce delay to test blocking replication
             if self.replication_delay > 0:
                 logger.info(f"Introducing {self.replication_delay}s delay for replication testing")
@@ -199,7 +135,7 @@ class SecondaryServer:
             if not all(field in data for field in required_fields):
                 return jsonify({"error": "Invalid message format"}), 400
                 
-            # Check for duplicate messages
+            # Check for duplicate messages using the new method
             message_hash = data['hash']
             if self.is_duplicate_message(message_hash):
                 logger.info(f"Duplicate message detected, skipping replication")
@@ -208,10 +144,10 @@ class SecondaryServer:
                     "message_id": data['id']
                 }), 200
                 
-            # Create message entry
+            # Rest of the method stays the same...
             message_entry = {
                 "id": data['id'],
-                "sequence": data['sequence'],
+                "sequence": data['sequence'],  # Preserve sequence number
                 "message": data['message'], 
                 "timestamp": data['timestamp'],
                 "hash": data['hash'],
@@ -219,22 +155,16 @@ class SecondaryServer:
                 "replicated_by": self.server_id
             }
             
-            # Insert message with total order enforcement
-            self.insert_in_total_order(message_entry)
-            
-            logger.info(f"Processed message {message_entry['id']} (seq: {message_entry['sequence']}): {message_entry['message']}")
-            
-            # Generate error AFTER processing message (to test deduplication)
-            if will_error_after:
-                logger.info(f"Generating test error after processing message {message_entry['id']}")
-                return jsonify({"error": "Simulated internal server error"}), 500
-                
-            # Send successful ACK back to master
+            # Insert message in sequence order instead of simple append
+            with self.message_lock:
+                self.insert_in_sequence_order(message_entry)
+                logger.info(f"Replicated message {message_entry['id']} (seq: {message_entry['sequence']}): {message_entry['message']}")
+                    
+            # Send ACK back to master
             return jsonify({
                 "status": "replicated",
                 "message_id": message_entry['id'],
                 "server_id": self.server_id,
-                "sequence": message_entry['sequence'],
                 "total_messages": len(self.messages)
             }), 200
             
