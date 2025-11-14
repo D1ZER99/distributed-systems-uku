@@ -15,6 +15,7 @@ services:
     environment:
       - SECONDARIES=http://secondary-1:5001,http://secondary-2:5002
       - DATA-DIR=/app/data
+      - SECONDARY_REQUEST_TIMEOUT=15.0 # set timeout > 10 seconds
 
   secondary-1:
     build:
