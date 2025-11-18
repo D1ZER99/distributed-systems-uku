@@ -40,12 +40,18 @@ class SecondaryReplicationWorker:
         ack_callback,
         initial_retry_delay: float,
         max_retry_delay: float,
+        is_healthy_fn=None,
+        wait_for_healthy_fn=None,
     ):
         self.secondary_url = secondary_url
         self.request_timeout = request_timeout
         self.ack_callback = ack_callback
         self.initial_retry_delay = max(initial_retry_delay, 0.1)
         self.max_retry_delay = max(max_retry_delay, self.initial_retry_delay)
+
+        # Health awareness supplied by MasterServer
+        self.is_healthy_fn = is_healthy_fn
+        self.wait_for_healthy_fn = wait_for_healthy_fn
 
         self.queue: Queue = Queue()
         self.stop_event = threading.Event()
@@ -76,6 +82,22 @@ class SecondaryReplicationWorker:
     def _deliver_with_retry(self, message_entry: Dict):
         delay = self.initial_retry_delay
         while not self.stop_event.is_set():
+            # If master says this secondary is not healthy, wait until it becomes healthy again
+            if self.is_healthy_fn is not None:
+                try:
+                    if not self.is_healthy_fn():
+                        logger.info("Secondary %s not healthy; pausing retries", self.secondary_url)
+                        if self.wait_for_healthy_fn is not None:
+                            self.wait_for_healthy_fn(self.stop_event)
+                        else:
+                            # Fallback: simple sleep-based wait
+                            if self.stop_event.wait(self.initial_retry_delay):
+                                return
+                        # After waiting, start loop again to re-check health
+                        continue
+                except Exception as exc:
+                    logger.error("Health check for %s failed: %s", self.secondary_url, exc)
+
             try:
                 response = self.session.post(
                     f"{self.secondary_url}/replicate",
@@ -131,12 +153,23 @@ class MasterServer:
         self.message_ack_tracker: Dict[int, set] = {}
         self.ack_condition = threading.Condition()
         self.replication_managers: Dict[str, SecondaryReplicationWorker] = {}
-        
+
+        # Heartbeat / health tracking for secondaries
+        self.secondary_health: Dict[str, Dict] = {}
+        self.health_condition = threading.Condition()
+        self.heartbeat_threads: Dict[str, threading.Thread] = {}
+        self.heartbeat_stop_event = threading.Event()
+
         # Tunable retry/backoff controls
         self.initial_retry_delay = float(os.environ.get('RETRY_DELAY_INITIAL', '1.0'))
         self.max_retry_delay = float(os.environ.get('RETRY_DELAY_MAX', '10.0'))
         self.secondary_request_timeout = float(os.environ.get('SECONDARY_REQUEST_TIMEOUT', '10.0'))
         self.write_concern_timeout = float(os.environ.get('WRITE_CONCERN_TIMEOUT_SECONDS', '0'))
+
+        # Heartbeat configuration
+        self.heartbeat_interval = float(os.environ.get('HEARTBEAT_INTERVAL_SECONDS', '3.0'))
+        self.heartbeat_timeout = float(os.environ.get('HEARTBEAT_TIMEOUT_SECONDS', '2.0'))
+        self.heartbeat_unhealthy_threshold = int(os.environ.get('HEARTBEAT_UNHEALTHY_THRESHOLD', '3'))
         
         # Setup routes
         self.setup_routes()
@@ -144,18 +177,27 @@ class MasterServer:
         # Load secondary servers from environment
         self.load_secondaries()
         self.initialize_replication_managers()
+        self.initialize_heartbeat_monitors()
         
         # Register shutdown handler
         atexit.register(self.shutdown)
         
     def shutdown(self):
-        """Shutdown replication managers gracefully"""
+        """Shutdown replication managers and heartbeat threads gracefully"""
         logger.info("Shutting down replication managers")
         for manager in list(self.replication_managers.values()):
             try:
                 manager.stop()
             except Exception as exc:
                 logger.error(f"Error shutting down manager for {manager.secondary_url}: {exc}")
+
+        logger.info("Shutting down heartbeat monitors")
+        self.heartbeat_stop_event.set()
+        for url, thread in list(self.heartbeat_threads.items()):
+            try:
+                thread.join(timeout=2)
+            except Exception as exc:
+                logger.error(f"Error joining heartbeat thread for {url}: {exc}")
         
     def load_secondaries(self):
         """Load secondary server URLs from environment variables"""
@@ -183,6 +225,8 @@ class MasterServer:
             ack_callback=self.handle_secondary_ack,
             initial_retry_delay=self.initial_retry_delay,
             max_retry_delay=self.max_retry_delay,
+            is_healthy_fn=lambda url=secondary_url: self.is_secondary_healthy(url),
+            wait_for_healthy_fn=lambda stop_event, url=secondary_url: self.wait_for_secondary_healthy(url, stop_event),
         )
 
         with self.message_lock:
@@ -193,13 +237,121 @@ class MasterServer:
 
         self.replication_managers[secondary_url] = manager
         logger.info(f"Started replication manager for {secondary_url} with backlog of {len(backlog)} messages")
+
+    def initialize_heartbeat_monitors(self):
+        """Start heartbeat monitors for all known secondaries."""
+        with self.secondary_lock:
+            for secondary_url in self.secondaries:
+                self._ensure_heartbeat_monitor(secondary_url)
+
+    def _ensure_heartbeat_monitor(self, secondary_url: str):
+        """Create a heartbeat monitor for the given secondary if missing."""
+        if secondary_url in self.heartbeat_threads:
+            return
+
+        thread = threading.Thread(
+            target=self._heartbeat_loop,
+            args=(secondary_url,),
+            daemon=True,
+        )
+        self.heartbeat_threads[secondary_url] = thread
+        thread.start()
+        logger.info(f"Started heartbeat monitor for {secondary_url}")
+
+    def _heartbeat_loop(self, secondary_url: str):
+        """Background loop that periodically checks secondary health."""
+        while not self.heartbeat_stop_event.is_set():
+            is_healthy = False
+            try:
+                resp = requests.get(
+                    f"{secondary_url}/health",
+                    timeout=self.heartbeat_timeout,
+                )
+                if resp.status_code == 200:
+                    is_healthy = True
+            except Exception as exc:
+                logger.warning("Heartbeat to %s failed: %s", secondary_url, exc)
+
+            now_iso = datetime.now().isoformat()
+            with self.health_condition:
+                info = self.secondary_health.setdefault(
+                    secondary_url,
+                    {"status": "Healthy", "last_heartbeat": None, "failure_count": 0},
+                )
+                prev_status = info["status"]
+
+                if is_healthy:
+                    info["failure_count"] = 0
+                    info["last_heartbeat"] = now_iso
+                    info["status"] = "Healthy"
+                else:
+                    info["failure_count"] += 1
+                    info["last_heartbeat"] = now_iso
+                    if info["failure_count"] >= self.heartbeat_unhealthy_threshold:
+                        info["status"] = "Unhealthy"
+                    else:
+                        info["status"] = "Suspected"
+
+                if info["status"] != prev_status:
+                    logger.info(
+                        "Secondary %s status changed from %s to %s",
+                        secondary_url,
+                        prev_status,
+                        info["status"],
+                    )
+                    self.health_condition.notify_all()
+
+            # Sleep until next heartbeat or stop requested
+            if self.heartbeat_stop_event.wait(self.heartbeat_interval):
+                break
+
+    def is_secondary_healthy(self, secondary_url: str) -> bool:
+        """Return True if secondary is considered healthy."""
+        with self.health_condition:
+            info = self.secondary_health.get(secondary_url)
+            # If we have no info yet, optimistically assume healthy
+            if not info:
+                return True
+            return info.get("status") == "Healthy"
+
+    def wait_for_secondary_healthy(self, secondary_url: str, stop_event: threading.Event):
+        """Block until secondary becomes healthy again or stop_event is set."""
+        with self.health_condition:
+            while not stop_event.is_set():
+                info = self.secondary_health.get(secondary_url)
+                if not info or info.get("status") == "Healthy":
+                    return
+                # Wait until next health change or heartbeat tick
+                self.health_condition.wait(timeout=self.heartbeat_interval)
             
     def setup_routes(self):
         """Setup Flask routes"""
         
         @self.app.route('/health', methods=['GET'])
         def health():
-            return jsonify({"status": "healthy", "role": "master"}), 200
+            # Expose per-secondary heartbeat status
+            with self.secondary_lock:
+                secondary_urls = list(self.secondaries)
+
+            with self.health_condition:
+                secondaries_status = []
+                for url in secondary_urls:
+                    info = self.secondary_health.get(
+                        url,
+                        {"status": "Unknown", "last_heartbeat": None, "failure_count": 0},
+                    )
+                    secondaries_status.append({
+                        "url": url,
+                        "status": info.get("status", "Unknown"),
+                        "last_heartbeat": info.get("last_heartbeat"),
+                        "failure_count": info.get("failure_count", 0),
+                    })
+
+            return jsonify({
+                "status": "healthy",
+                "role": "master",
+                "secondaries": secondaries_status,
+            }), 200
             
         @self.app.route('/messages', methods=['POST'])
         def post_message():
@@ -328,6 +480,7 @@ class MasterServer:
                     self.secondaries.append(secondary_url)
                     logger.info(f"Registered new secondary: {secondary_url}")
                     self._ensure_replication_manager(secondary_url)
+                    self._ensure_heartbeat_monitor(secondary_url)
                 else:
                     logger.info(f"Secondary {secondary_url} already registered")
                 
